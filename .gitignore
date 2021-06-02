@@ -3,3 +3,9 @@ venv
 
 # Jetbrains project files
 .idea
+
+# Caches
+.mypy_cache
+
+# cached datasets
+data

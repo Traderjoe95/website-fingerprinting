@@ -1,0 +1,41 @@
+[tool.poetry]
+name = "website-fingerprinting"
+version = "0.1.0"
+description = "A comprehensive evaluation suite for website fingerprinting attacks and countermeasures"
+authors = ["Johannes Leupold <johannes.leupold@stud.tu-darmstadt.de>"]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+
+numpy = "^1.20.2"
+pandas = "^1.2.4"
+tables = "^3.6.1"
+scikit-learn = "^0.24.1"
+
+dpkt = "^1.9.5"
+
+curio = "^1.5"
+asks = "^2.4.12"
+
+click = "^8.0.0"
+progressbar2 = "^3.53.1"
+pytomlpp = "^0.3.5"
+
+frozenlist = "^1.1.1"
+typing-extensions = "^3.7.4"
+pendulum = "^2.1.2"
+asyncstdlib = "^3.9.1"
+plotly = "^4.14.3"
+
+[tool.poetry.dev-dependencies]
+mypy = "^0.812"
+yapf = "^0.31.0"
+toml = "^0.10.2"
+
+[tool.yapf]
+based_on_style = "pep8"
+column_limit = 120
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
