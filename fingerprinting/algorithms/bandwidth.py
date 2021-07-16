@@ -1,23 +1,7 @@
 import numpy as np
+import scipy.stats as st
 
-
-class Normal(object):
-    """
-    The 1D normal (or Gaussian) distribution.
-    """
-
-    @staticmethod
-    def pdf(x, mu, sigma):
-        return np.exp(Normal.logpdf(x, mu, sigma))
-
-    @staticmethod
-    def logpdf(x, mu, sigma):
-        return -0.5 * np.log(2.0 * np.pi) - np.log(sigma) - \
-               0.5 * ((x - mu) ** 2) / (sigma ** 2)
-
-    @staticmethod
-    def rvs(mu, sigma, n=1):
-        return np.random.normal(mu, sigma, n)
+ZERO_VAR_BANDWIDTH = .01 / 6
 
 
 def wmean(x, w):
@@ -35,29 +19,53 @@ def wvar(x, w):
 
 
 def dnorm(x):
-    return Normal.pdf(x, 0.0, 1.0)
+    return st.norm.pdf(x)
 
 
-def silverman(x, weights=None):
-    IQR = np.percentile(x, 75, axis=0) - np.percentile(x, 25, axis=0)
-    A = np.minimum(np.std(x, ddof=1, axis=0), IQR / 1.349)
+def weka_precision(sorted_x):
+    delta = sorted_x[1:, :] - sorted_x[:-1, :]
+    delta_sum = np.sum(delta, axis=0)
+    distinct = np.sum(delta > 0, axis=0)
 
-    if weights is None:
-        weights = np.ones(len(x))
-    n = np.sum(weights, axis=0).astype(np.float64)
-
-    return 0.9 * A * n ** (-0.2)
+    # 0.01 is the default precision from Weka's NaiveBayes class
+    return np.maximum(delta_sum / (distinct + 1e-23), 0.01)
 
 
-def scott(x, weights=None):
-    IQR = np.percentile(x, 75, axis=0) - np.percentile(x, 25, axis=0)
-    A = np.minimum(np.std(x, ddof=1, axis=0), IQR / 1.349)
+def weka(x, weights=None):
+    sorted_x = np.sort(x, axis=0)
 
     if weights is None:
         weights = np.ones(x.shape)
     n = np.sum(weights, axis=0).astype(np.float64)
 
-    return 1.059 * A * n ** (-0.2)
+    x_range = sorted_x[-1, :] - sorted_x[0, :]
+
+    precision = weka_precision(sorted_x)
+    h = np.maximum(x_range / np.sqrt(n), precision / 6)
+
+    return h
+
+
+def silverman(x, weights=None):
+    return __iqr_method(x, weights, 0.9)
+
+
+def scott(x, weights=None):
+    return __iqr_method(x, weights, 1.059)
+
+
+def __iqr_method(x, weights, factor):
+    iqr = np.percentile(x, 75, axis=0) - np.percentile(x, 25, axis=0)
+    a = np.minimum(np.std(x, ddof=1, axis=0), iqr / 1.349)
+
+    if weights is None:
+        weights = np.ones(x.shape)
+    n = np.sum(weights, axis=0).astype(np.float64)
+
+    h = factor * a * n ** (-0.2)
+
+    # default bandwidth for zero variance case
+    return np.where(h == 0., ZERO_VAR_BANDWIDTH, h)
 
 
 def norm(x, weights=None):
@@ -118,7 +126,10 @@ def sheather_jones(x, weights=None):
         res_v1 = np.where(~done, v1, res_v1)
         done = done | (v1 * v0 <= 0)
 
-    return res_h0 + (res_h1 - res_h0) * np.abs(res_v0) / (np.abs(res_v0) + np.abs(res_v1))
+    h = res_h0 + (res_h1 - res_h0) * np.abs(res_v0) / (np.abs(res_v0) + np.abs(res_v1))
+
+    # default bandwidth for zero variance case
+    return np.where(h == 0., ZERO_VAR_BANDWIDTH, h)
 
 
 def __sj_eq(x, h):
@@ -130,8 +141,12 @@ def __sj_eq(x, h):
         density estimation. Simon J. Sheather and Michael C. Jones.
         Journal of the Royal Statistical Society, Series B. 1991
     """
-    phi6 = lambda x: (x ** 6 - 15 * x ** 4 + 45 * x ** 2 - 15) * dnorm(x)
-    phi4 = lambda x: (x ** 4 - 6 * x ** 2 + 3) * dnorm(x)
+
+    def phi6(x_):
+        return (x_ ** 6 - 15 * x_ ** 4 + 45 * x_ ** 2 - 15) * dnorm(x_)
+
+    def phi4(x_):
+        return (x_ ** 4 - 6 * x_ ** 2 + 3) * dnorm(x_)
 
     n = x.shape[0]
     f = x.shape[1]
@@ -141,21 +156,21 @@ def __sj_eq(x, h):
     a = 0.92 * lam * n ** (-1 / 7.0) + 1.e-32
     b = 0.912 * lam * n ** (-1 / 9.0) + 1.e-32
 
-    W = np.transpose(np.broadcast_to(x, (n, n, f)), (2, 0, 1))
-    W = W - np.transpose(W, (0, 2, 1))
+    w = np.transpose(np.broadcast_to(x, (n, n, f)), (2, 0, 1))
+    w = w - np.transpose(w, (0, 2, 1))
 
-    W1 = phi6(W / b.reshape((f, 1, 1)))
-    tdb = np.squeeze(np.dot(np.dot(one, W1), one.T))
+    w1 = phi6(w / b.reshape((f, 1, 1)))
+    tdb = np.squeeze(np.dot(np.dot(one, w1), one.T))
     tdb = -tdb / (n * (n - 1) * b ** 7)
 
-    W1 = phi4(W / a.reshape((f, 1, 1)))
-    sda = np.squeeze(np.dot(np.dot(one, W1), one.T))
+    w1 = phi4(w / a.reshape((f, 1, 1)))
+    sda = np.squeeze(np.dot(np.dot(one, w1), one.T))
     sda = sda / (n * (n - 1) * a ** 5)
 
     alpha2 = 1.357 * (np.abs(sda / tdb)) ** (1 / 7.0) * h ** (5 / 7.0) + 1.e-32
 
-    W1 = phi4(W / alpha2.reshape(f, 1, 1))
-    sdalpha2 = np.squeeze(np.dot(np.dot(one, W1), one.T).ravel())
+    w1 = phi4(w / alpha2.reshape(f, 1, 1))
+    sdalpha2 = np.squeeze(np.dot(np.dot(one, w1), one.T).ravel())
     sdalpha2 = sdalpha2 / (n * (n - 1) * alpha2 ** 5)
 
-    return (Normal.pdf(0, 0, np.sqrt(2)) / (n * np.abs(sdalpha2))) ** 0.2 - h
+    return (st.norm.pdf(0, scale=np.sqrt(2)) / (n * np.abs(sdalpha2))) ** 0.2 - h

@@ -11,10 +11,10 @@ from typing import AsyncIterable, AsyncGenerator, Tuple, Optional, Iterable, Uni
 import curio
 import numpy as np
 import pandas as pd
-import progressbar
 from asyncstdlib import tee
 from sklearn.metrics import accuracy_score  #
 
+from .dataset import DatasetConfig
 from .evaluation import EvaluationConfig
 from .typing import OffsetOrDelta, SiteSelection, LabelledExamples, Transformer, TrainTestSplit, TracesStream, \
     HasParams, Metric, Classifier, StreamableClassifier, ExampleStream, LabelledExampleStream, Traces
@@ -49,9 +49,16 @@ class Named(metaclass=ABCMeta):
         ...
 
 
+class StaticNamed(metaclass=ABCMeta):
+    @staticmethod
+    @abstractmethod
+    def name() -> str:
+        ...
+
+
 # noinspection PyUnusedLocal
-class Dataset(Named, metaclass=ABCMeta):
-    def __init__(self, *, sites: int, traces_per_site: int):
+class Dataset(StaticNamed, metaclass=ABCMeta):
+    def __init__(self, *, sites: int, traces_per_site: int, config: DatasetConfig):
         if sites < 1:
             raise ValueError("There must be at least one site in any dataset")
 
@@ -60,6 +67,7 @@ class Dataset(Named, metaclass=ABCMeta):
 
         self.__sites = sites
         self.__traces_per_site = traces_per_site
+        self.__config = config
 
     async def load_all(self, *, sites: SiteSelection = None) -> AsyncGenerator[pd.DataFrame, None]:
         """
@@ -108,7 +116,7 @@ class Dataset(Named, metaclass=ABCMeta):
         else:
             test_offset += train_test_delta
 
-        train = self.load(offset=train_offset, examples_per_site=train_examples_per_site, sites=sites)
+        train = self.load(offset=train_offset, examples_per_site=train_examples_per_site,sites=sites)
         test = self.load(offset=test_offset, examples_per_site=test_examples_per_site, sites=sites)
 
         return train, test
@@ -202,6 +210,8 @@ class Dataset(Named, metaclass=ABCMeta):
         return offset, count
 
     def _check_sites(self, sites: SiteSelection) -> Union[None, int, range, Set[int]]:
+        sites = sites or self.__config.sites
+
         zero = False
         out_of_bounds = None
 
@@ -267,7 +277,7 @@ class Dataset(Named, metaclass=ABCMeta):
         return False
 
 
-class Defense(Named, Fitted[pd.DataFrame], metaclass=ABCMeta):
+class Defense(StaticNamed, Fitted[pd.DataFrame], HasParams, metaclass=ABCMeta):
     """
     The base class of any defense.
 
@@ -355,6 +365,10 @@ class FeatureSet(HasParams, metaclass=ABCMeta):
 
     def __truediv__(self, transformer: Transformer) -> 'FeatureSet':
         return _transform_feature_set(self, transformer)
+
+    @abstractmethod
+    def reset(self):
+        ...
 
 
 class AttackInstance:
@@ -459,7 +473,7 @@ class AttackInstance:
             raise AssertionError("The attack must be fitted first")
 
 
-class AttackDefinition(Named, metaclass=ABCMeta):
+class AttackDefinition(StaticNamed, metaclass=ABCMeta):
     def instantiate(self,
                     *,
                     classes: Optional[np.ndarray] = None,
@@ -492,8 +506,9 @@ class AttackDefinition(Named, metaclass=ABCMeta):
         ...
 
 
-EvaluationDataset = Union[Dataset, Tuple[str, Dataset]]
-Datasets = Union[EvaluationDataset, List[EvaluationDataset], Dict[str, Dataset]]
+Dataset_ = Union[Type[Dataset], Dataset]
+EvaluationDataset = Union[Dataset_, Tuple[str, Dataset_]]
+Datasets = Union[EvaluationDataset, List[EvaluationDataset], Dict[str, Dataset_]]
 
 AttackDefinition_ = Union[Type[AttackDefinition], AttackDefinition]
 EvaluationAttack = Union[AttackDefinition_, Tuple[str, AttackDefinition_]]
@@ -506,14 +521,21 @@ Defenses = Union[None, EvaluationDefense, List[EvaluationDefense], Dict[str, Def
 
 class EvaluationPipeline:
     def __init__(self, datasets: Datasets, attacks: Attacks, *, defenses: Defenses = None):
+        if (isinstance(datasets, list) or isinstance(datasets, dict)) and len(datasets) == 0:
+            raise ValueError("At least one dataset is required for the evaluation pipeline")
+        if (isinstance(attacks, list) or isinstance(attacks, dict)) and len(attacks) == 0:
+            raise ValueError("At least one attack is required for the evaluation pipeline")
+
         self.__datasets: Dict[str, Dataset] = {}
-        if isinstance(datasets, Dataset) or isinstance(datasets, tuple):
+        if isinstance(datasets, Dataset) or isinstance(datasets, type) or isinstance(datasets, tuple):
             self.add_dataset(datasets)
         elif isinstance(datasets, list):
             for ds in datasets:
                 self.add_dataset(ds)
         else:
-            self.__datasets.update(datasets)
+            for name in datasets:
+                ds = datasets[name]
+                self.add_dataset((name, ds))
 
         self.__attacks: Dict[str, AttackDefinition] = {}
         if isinstance(attacks, AttackDefinition) or isinstance(attacks, type) or isinstance(attacks, tuple):
@@ -532,6 +554,9 @@ class EvaluationPipeline:
         elif isinstance(defenses, list):
             for defense in defenses:
                 self.add_defense(defense)
+
+            if len(defenses) == 0:
+                self.__defenses["none"] = None
         elif defenses is not None:
             for name in defenses:
                 defense = defenses[name]
@@ -541,16 +566,22 @@ class EvaluationPipeline:
 
     def add_dataset(self, dataset: EvaluationDataset) -> 'EvaluationPipeline':
         if isinstance(dataset, Dataset):
-            self.__datasets[dataset.name] = dataset
+            self.__datasets[dataset.name()] = dataset
+        elif isinstance(dataset, type):
+            return self.add_dataset(dataset())
         else:
             name, dataset = dataset
-            self.__datasets[name] = dataset
+
+            if isinstance(dataset, Dataset):
+                self.__datasets[name] = dataset
+            else:
+                return self.add_dataset((name, dataset()))
 
         return self
 
     def add_attack(self, attack: EvaluationAttack) -> 'EvaluationPipeline':
         if isinstance(attack, AttackDefinition):
-            self.__attacks[attack.name] = attack
+            self.__attacks[attack.name()] = attack
         elif isinstance(attack, type):
             return self.add_attack(attack())
         else:
@@ -565,16 +596,18 @@ class EvaluationPipeline:
 
     def add_defense(self, defense: EvaluationDefense) -> 'EvaluationPipeline':
         if isinstance(defense, Defense):
-            self.__defenses[defense.name] = defense
+            self.__defenses[defense.name()] = defense
         elif isinstance(defense, type):
             return self.add_defense(defense())
         elif defense is not None:
             name, defense = defense
 
-            if isinstance(defense, Defense):
+            if defense is not None and isinstance(defense, Defense):
                 self.__defenses[name] = defense
-            else:
+            elif defense is not None:
                 return self.add_defense((name, defense()))
+            else:
+                self.__defenses[name] = None
         else:
             self.__defenses["none"] = None
 
@@ -605,91 +638,7 @@ class EvaluationPipeline:
 
         return curio.run(fit_score, train, test)
 
-    async def __run_score_randomized(self, websites: int, runs: int, train_examples_per_site: int,
-                                     train_offset: OffsetOrDelta, test_examples_per_site: int,
-                                     train_test_delta: OffsetOrDelta, concat: bool, metric: Metric) -> float:
-        widgets = [
-            progressbar.Percentage(), ' (',
-            progressbar.SimpleProgress(), f') ',
-            progressbar.Bar(left='[', right=']'), ' ',
-            progressbar.Timer(), ' ',
-            progressbar.AdaptiveETA(), ' - ', 'Score: ',
-            progressbar.FormatLabel('{variables.score:8.5f}', new_style=True)
-        ]
-
-        score = 0.
-
-        bar = progressbar.ProgressBar(min_value=0,
-                                      max_value=runs,
-                                      widgets=widgets,
-                                      redirect_stdout=True,
-                                      variables={'score': 0.})
-        for i in bar(range(runs)):
-            _logger.info("Starting evaluation run %d/%d", i + 1, runs)
-
-            sites = random.sample(range(self.__dataset.sites), k=websites)
-
-            async def update_loop():
-                while True:
-                    await curio.sleep(0.5)
-                    bar.update(score=score)
-
-            async with curio.TaskGroup(wait=any) as g:
-                await g.spawn(update_loop)
-                t = await g.spawn(
-                    curio.run_in_process,
-                    partial(self._score_worker,
-                            train_examples_per_site=train_examples_per_site,
-                            train_offset=train_offset,
-                            test_examples_per_site=test_examples_per_site,
-                            train_test_delta=train_test_delta,
-                            sites=sites,
-                            concat=concat,
-                            metric=metric), get_queue(),
-                    getLogger().level)
-
-            run_score = await t.join()
-
-            _logger.info("Run %d/%d finished with a score of %.5f", i + 1, runs, run_score)
-
-            if i == 0:
-                score = run_score
-            else:
-                score = (score * i + run_score) / (i + 1)
-            bar.update(score=score)
-
-        return score
-
-    def score_randomized(self,
-                         websites: int,
-                         runs: int = 1,
-                         *,
-                         train_examples_per_site: int = 1,
-                         train_offset: OffsetOrDelta = 0,
-                         test_examples_per_site: int = 1,
-                         train_test_delta: OffsetOrDelta = 0,
-                         concat: bool = False,
-                         metric: Metric = accuracy_score) -> float:
-        if websites < 2:
-            raise ValueError("Scoring with less than two websites is not possible")
-        if runs < 1:
-            raise ValueError("You must do a positive number of runs")
-
-        _logger.info("Running evaluation with {runs = %d, websites = %d, train_examples = %d, test_examples = %d}",
-                     runs, websites, train_examples_per_site, test_examples_per_site)
-
-        score = curio.run(self.__run_score_randomized, websites, runs, train_examples_per_site, train_offset,
-                          test_examples_per_site, train_test_delta, concat, metric)
-
-        return score
-
-    async def __run_evaluation(self, config: EvaluationConfig) -> pd.DataFrame:
-        # bar = progressbar.ProgressBar(min_value=0,
-        #                               max_value=runs,
-        #                               widgets=widgets,
-        #                               redirect_stdout=True,
-        #                               variables={'score': 0.}
-
+    async def __run_evaluation(self, config: EvaluationConfig, site_ids: Optional[Set[int]]) -> pd.DataFrame:
         results: List[Dict[str, Any]] = []
 
         async with curio.TaskGroup() as g:
@@ -698,7 +647,7 @@ class EvaluationPipeline:
                     runner = partial(self._score_worker, metric=params.metric)
 
                     for run in range(params.runs):
-                        sites = random.sample(range(dataset.sites), k=params.websites)
+                        sites = random.sample(site_ids or range(dataset.sites), k=params.websites)
                         classes = dataset.labels(sites).values
 
                         train, test = dataset.load_train_test(train_examples_per_site=params.train_examples,
@@ -716,6 +665,10 @@ class EvaluationPipeline:
                             test = tests[defense_idx]
 
                             if defense is not None:
+                                defense_params = params.defense_params(defense_name)
+                                if defense_params is not None:
+                                    defense.set_params(**defense_params)
+
                                 train = defense.fit_defend(train)
                                 test = defense.defend_all(test)
 
@@ -760,8 +713,8 @@ class EvaluationPipeline:
 
         return result_df
 
-    def run_evaluation(self, config: EvaluationConfig) -> pd.DataFrame:
-        return curio.run(self.__run_evaluation, config)
+    def run_evaluation(self, config: EvaluationConfig, site_ids: Optional[Set[int]] = None) -> pd.DataFrame:
+        return curio.run(self.__run_evaluation, config, site_ids)
 
 
 def _evaluation_pipeline(attack: Union[Type[AttackDefinition], AttackDefinition], data: Dataset) -> EvaluationPipeline:

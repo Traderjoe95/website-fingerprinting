@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-from ..api.typing import TracesStream, LabelledExamples
+from ..api.typing import TracesStream, LabelledExamples, Traces
 
 
 def get_bursts(trace: pd.DataFrame) -> pd.DataFrame:
@@ -15,11 +15,9 @@ def get_bursts(trace: pd.DataFrame) -> pd.DataFrame:
     burst_id = (signs != signs.shift()).cumsum()
 
     bursts = trace["size"].groupby(burst_id).aggregate(["sum",
-                                                        "count"]).rename({
-                                                            "sum": "burst_size",
-                                                            "count": "burst_length"
-                                                        },
-                                                                         axis=1)
+                                                        "count"]).rename({"sum": "burst_size",
+                                                                          "count": "burst_length"
+                                                                          }, axis=1)
     bursts["burst_id"] = burst_id.unique()
 
     return bursts[["burst_id", "burst_length", "burst_size"]].set_index("burst_id")
@@ -45,7 +43,7 @@ async def fill_missing(traces_stream: TracesStream, attributes: Set[str]) -> Asy
         del traces["trace_id"]
 
         labels = traces.pop("site_id").values
-        traces = traces[traces.columns.sort_values()]
+        traces = traces.reindex(traces.columns.sort_values(), axis=1)
 
         yield sp.csr_matrix(traces.values), labels
 
@@ -54,20 +52,24 @@ def markers(bursts: pd.DataFrame, column: str, marker_id: str, attributes: Set[s
     if "unit" not in bursts:
         bursts["unit"] = 1
 
-    markers = pd.pivot_table(bursts,
-                             values="unit",
-                             index=["site_id", "trace_id"],
-                             columns=column,
-                             fill_value=0,
-                             aggfunc="sum")
+    m = pd.pivot_table(bursts,
+                       values="unit",
+                       index=["site_id", "trace_id"],
+                       columns=column,
+                       fill_value=0,
+                       aggfunc="sum")
 
-    if 0 in markers:
-        del markers[0]
+    if 0 in m:
+        del m[0]
 
-    markers = markers.rename(lambda size: f"{marker_id}{size}", axis=1)
-    markers.columns.name = None
+    m = m.rename(lambda size: f"{marker_id}{size}", axis=1)
+    m.columns.name = None
 
-    for c in markers:
+    for c in m:
         attributes.add(c)
 
-    return markers
+    return m
+
+
+def empty_markers(traces: Traces):
+    return pd.DataFrame(index=traces.index.unique())

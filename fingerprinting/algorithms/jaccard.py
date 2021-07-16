@@ -6,10 +6,12 @@ import scipy.sparse as sp
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 # noinspection PyPep8Naming
-from fingerprinting.util.pipeline import is_sparse_matrix
+from ..api.typing import StreamableClassifier
+from ..util.pipeline import is_sparse_matrix
 
 
-class JaccardClassifier(BaseEstimator, ClassifierMixin):
+# noinspection PyPep8Naming
+class JaccardClassifier(StreamableClassifier, BaseEstimator, ClassifierMixin):
     def __init__(self, *, alpha: float = 0):
         self.alpha = alpha
 
@@ -21,7 +23,7 @@ class JaccardClassifier(BaseEstimator, ClassifierMixin):
         self.__dirty = False
         self.__unit_model: Optional[np.ndarray] = None
 
-    def fit(self, X, y) -> 'JaccardClassifier':
+    def fit(self, X, y, **fit_params) -> 'JaccardClassifier':
         self.model_ = None
         return self.partial_fit(X, y, np.sort(np.unique(y)))
 
@@ -84,3 +86,21 @@ class JaccardClassifier(BaseEstimator, ClassifierMixin):
 
     def predict(self, X):
         return self.classes_[np.argmax(self.calculate_jaccard(X), axis=1)]
+
+    def get_params(self):
+        return {'alpha': self.alpha}
+
+    def set_params(self, **params):
+        if 'alpha' in params:
+            self.alpha = params['alpha']
+
+    @property
+    def alpha(self) -> float:
+        return self.__alpha
+
+    @alpha.setter
+    def alpha(self, alpha: float):
+        if alpha < 0:
+            raise ValueError("alpha must not be negative")
+
+        self.__alpha = alpha

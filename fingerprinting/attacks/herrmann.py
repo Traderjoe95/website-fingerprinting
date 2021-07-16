@@ -1,10 +1,19 @@
-import numpy as np
+from typing import List, Type
+
 from sklearn.feature_extraction.text import TfidfTransformer
 from sklearn.naive_bayes import MultinomialNB
 
 from ..api import AttackDefinition, FeatureSet
 from ..api.typing import Classifier
 from ..features import PacketHistogram
+
+
+def plugin_path() -> str:
+    return 'core.attacks.herrmann'
+
+
+def attacks() -> List[Type[AttackDefinition]]:
+    return [Herrmann]
 
 
 class Herrmann(AttackDefinition):
@@ -14,6 +23,6 @@ class Herrmann(AttackDefinition):
     def _create_classifier(self) -> Classifier:
         return MultinomialNB()
 
-    @property
-    def name(self) -> str:
+    @staticmethod
+    def name() -> str:
         return "herrmann"

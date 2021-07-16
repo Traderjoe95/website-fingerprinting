@@ -1,3 +1,2 @@
-from fingerprinting.datasets.dummy import DummyDataset as Dummy
-
-from fingerprinting.datasets.liberatore import LiberatoreDataset as Liberatore
+from .dummy import DummyDataset as Dummy
+from .liberatore import LiberatoreDataset as Liberatore

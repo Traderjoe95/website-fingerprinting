@@ -1,5 +1,6 @@
 from datetime import datetime, date, time
 from typing import Union, List, Dict, Any, Optional, Type, TypeVar, Callable
+import copy
 
 import pytomlpp
 
@@ -8,7 +9,7 @@ ConfigPath = Union[str, int, List[int], List[str], List[Union[str, int]]]
 ComplexItem = Union['ConfigList', 'ConfigObject']
 ConfigValue = Union[int, str, float, bool, datetime, date, time, ComplexItem]
 
-StdValue = Union[int, str, float, bool, datetime, List[Any], Dict[str, Any]]
+StdValue = Union[int, str, float, bool, datetime, date, time, List[Any], Dict[str, Any]]
 
 
 class ConfigBase:
@@ -154,11 +155,15 @@ class ConfigObject(ConfigBase):
         return str(self.__dict)
 
     def as_dict(self):
-        return self.__dict
+        return {key: _to_stdlib(value) for key, value in self.__dict.items()}
 
     def as_obj(self, cls: Type[T], **kwargs) -> T:
         # noinspection Mypy
         return cls(**self.as_dict(), **kwargs)
+
+    def merge_into(self, other: 'ConfigObject', *, other_is_override: bool = False) -> 'ConfigObject':
+        m = _merge(self.as_dict(), other.as_dict()) if other_is_override else _merge(other.as_dict(), self.as_dict())
+        return ConfigObject({key: _to_config_value(value) for key, value in m.items()})
 
     def _get_int_idx(self, idx: int) -> Optional[ConfigValue]:
         return self[str(idx)]
@@ -170,7 +175,7 @@ class ConfigObject(ConfigBase):
             return None
 
     def _as_config_value(self) -> Optional[ConfigValue]:
-        return super()._as_config_value()
+        return self
 
 
 def _to_stdlib(value: ConfigValue) -> StdValue:
@@ -194,7 +199,7 @@ def _to_config_value(value: StdValue) -> ConfigValue:
     elif isinstance(value, list):
         return ConfigList([_to_config_value(val) for val in value])
     elif isinstance(value, dict):
-        return ConfigObject(dict((key, _to_config_value(value[key])) for key in value))
+        return ConfigObject({key: _to_config_value(val) for key, val in value.items()})
 
     raise ValueError("Unrecognized input type " + str(type(value)))
 
@@ -202,9 +207,58 @@ def _to_config_value(value: StdValue) -> ConfigValue:
 def load() -> 'ConfigObject':
     with open('config.toml', 'r') as f:
         # noinspection PyTypeChecker
-        _dict = pytomlpp.load(f)
+        _dict = __resolve(pytomlpp.load(f), ['config.toml'])
 
-        return ConfigObject(dict((key, _to_config_value(_dict[key])) for key in _dict))
+        return ConfigObject({key: _to_config_value(value) for key, value in _dict.items()})
+
+
+def __resolve(_dict, resolving):
+    if resolving is None:
+        resolving = []
+
+    included = None
+
+    for key in _dict:
+        if key == '__include__':
+            val = _dict['__include__']
+
+            if str(val) in resolving:
+                raise RuntimeError('Encountered __include__ cycle:\n'
+                                   f' {" -> ".join(resolving)} -> {val}')
+
+            with open(val, 'r') as f:
+                # noinspection PyTypeChecker
+                included = __resolve(pytomlpp.load(f), resolving + [val])
+        else:
+            val = _dict[key]
+
+            if isinstance(val, dict):
+                _dict[key] = __resolve(val, resolving)
+            elif isinstance(val, list) and any(isinstance(it, dict) for it in val):
+                _dict[key] = [it if not isinstance(it, dict) else __resolve(it, resolving) for it in val]
+
+    if included is not None:
+        _dict = _merge(included, _dict)
+
+    return _dict
+
+
+def _merge(defaults, overrides):
+    merged = copy.deepcopy(defaults)
+
+    for key in overrides:
+        if key not in merged:
+            merged[key] = overrides[key]
+        else:
+            val = merged[key]
+            override = overrides[key]
+
+            if isinstance(val, dict) and isinstance(override, dict):
+                merged[key] = _merge(val, override)
+            else:
+                merged[key] = override
+
+    return merged
 
 
 CONFIG = load()

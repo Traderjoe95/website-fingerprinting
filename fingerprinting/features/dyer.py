@@ -18,6 +18,9 @@ class Time(StatelessFeatureSet):
 
         return time.values, labels.values
 
+    def get_params(self):
+        return {}
+
 
 class Bandwidth(StatelessFeatureSet):
     async def _extract(self, traces: pd.DataFrame) -> LabelledExamples:
@@ -37,6 +40,9 @@ class Bandwidth(StatelessFeatureSet):
 
         return np.abs(bw.values), labels.values
 
+    def get_params(self):
+        return {}
+
 
 class VariableNGram(FeatureSet):
     def __init__(self):
@@ -52,9 +58,12 @@ class VariableNGram(FeatureSet):
         direction = np.clip(bursts["burst_size"], -1, 1)
         bursts["vng_size"] = direction * round_to_increment(np.abs(bursts["burst_size"]), 600)
 
-        features = markers(bursts, "vng_size", "S", self.__attributes)
+        features = markers(bursts, "vng_size", "VNG_S", self.__attributes)
 
         return features
 
     def reset(self):
         self.__attributes = set()
+
+    def get_params(self):
+        return {}

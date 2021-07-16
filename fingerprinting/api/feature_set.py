@@ -1,5 +1,5 @@
 from abc import ABCMeta, abstractmethod
-from typing import AsyncGenerator, AsyncIterable, Callable
+from typing import AsyncGenerator, AsyncIterable, Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -7,7 +7,7 @@ import scipy.sparse as sp
 from asyncstdlib.itertools import tee, zip
 
 from .pipeline import FeatureSet
-from .typing import Transformer, StreamableTransformer, LabelledExamples, TrainTestSplit, TracesStream
+from .typing import Transformer, StreamableTransformer, LabelledExamples, TrainTestSplit, TracesStream, HasParams
 from ..util.pipeline import collect, is_sparse_matrix
 
 
@@ -15,6 +15,7 @@ class StatelessFeatureSet(FeatureSet, metaclass=ABCMeta):
     """
     The base class for a feature set that does not require fitting.
     """
+
     async def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
         return self._extract_all(train_traces), self._extract_all(test_traces)
 
@@ -44,8 +45,15 @@ class CombinedFeatureSet(FeatureSet):
 
         return _combine_all_features(left_train, right_train), _combine_all_features(left_test, right_test)
 
+    def get_params(self):
+        return _get_combined_params(self.__left, self.__right)
+
+    def set_params(self, **params):
+        _set_combined_params(self.__left, self.__right, params)
+
     def reset(self):
-        pass
+        self.__left.reset()
+        self.__right.reset()
 
 
 class StatelessCombinedFeatureSet(StatelessFeatureSet):
@@ -55,6 +63,33 @@ class StatelessCombinedFeatureSet(StatelessFeatureSet):
 
     async def _extract(self, traces: pd.DataFrame) -> LabelledExamples:
         return _combine_features(await self.__left._extract(traces), await self.__right._extract(traces))
+
+    def get_params(self):
+        return _get_combined_params(self.__left, self.__right)
+
+    def set_params(self, **params):
+        _set_combined_params(self.__left, self.__right, params)
+
+
+def _get_combined_params(left: HasParams, right: HasParams,
+                         left_tag: str = 'left', right_tag: str = 'right'):
+    params = {f'{left_tag}__{name}': value for name, value in left.get_params().items()}
+    params.update({f'{right_tag}__{name}': value for name, value in right.get_params().items()})
+
+    return params
+
+
+def _filter_params(params: Dict[str, Any], tag: str) -> Dict[str, Any]:
+    return {name[len(tag) + 2:]: value for name, value in params.items() if name.startswith(f'{tag}__')}
+
+
+def _set_combined_params(left: HasParams, right: HasParams, params: Dict[str, Any],
+                         left_tag: str = 'left', right_tag: str = 'right'):
+    left_params = _filter_params(params, left_tag)
+    right_params = _filter_params(params, right_tag)
+
+    left.set_params(**left_params)
+    right.set_params(**right_params)
 
 
 class TransformedFeatureSet(FeatureSet):
@@ -73,16 +108,25 @@ class TransformedFeatureSet(FeatureSet):
             examples, labels = await collect(train_trans)
             self.__transformer.fit(examples, labels)
 
-        return self.__extract_all(train), self.__extract_all(test)
+        return self.__transform_all(train), self.__transform_all(test)
 
-    async def __extract_all(self, examples_stream: AsyncIterable[LabelledExamples]) -> AsyncIterable[LabelledExamples]:
-        async for examples, labels in examples_stream:
+    async def __transform_all(self, features: AsyncIterable[LabelledExamples]) -> AsyncIterable[LabelledExamples]:
+        async for examples, labels in features:
             yield self.__transformer.transform(examples), labels
+
+    def get_params(self):
+        return _get_combined_params(self.__features, self.__transformer, left_tag='features', right_tag='transformer')
+
+    def set_params(self, **params):
+        _set_combined_params(self.__features, self.__transformer, params, left_tag='features', right_tag='transformer')
+
+    def reset(self):
+        self.__features.reset()
 
 
 async def _combine_all_features(
-        left_stream: AsyncIterable[LabelledExamples],
-        right_stream: AsyncIterable[LabelledExamples]) -> AsyncGenerator[LabelledExamples, None]:
+    left_stream: AsyncIterable[LabelledExamples], right_stream: AsyncIterable[LabelledExamples]
+) -> AsyncGenerator[LabelledExamples, None]:
     async for left, right in zip(left_stream, right_stream, strict=True):
         yield _combine_features(left, right)
 

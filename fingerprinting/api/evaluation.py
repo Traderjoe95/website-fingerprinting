@@ -16,7 +16,9 @@ OffsetOrRange = Union[OffsetOrDelta, str, range, List[Union[str, OffsetOrDelta]]
 class EvaluationParams:
     def __init__(self, websites: int, runs: int, metric: Metric, train_offset: OffsetOrDelta,
                  train_test_delta: OffsetOrDelta, train_examples: int, test_examples: int,
-                 feature_set: Optional[Dict[str, Dict[str, Any]]], classifier: Optional[Dict[str, Dict[str, Any]]]):
+                 defense: Optional[Dict[str, Dict[str, Any]]],
+                 feature_set: Optional[Dict[str, Dict[str, Any]]],
+                 classifier: Optional[Dict[str, Dict[str, Any]]]):
         self.__websites = websites
         self.__runs = runs
         self.__metric = metric
@@ -24,6 +26,7 @@ class EvaluationParams:
         self.__train_test_delta = train_test_delta
         self.__train_examples = train_examples
         self.__test_examples = test_examples
+        self.__defense = defense
         self.__feature_set = feature_set
         self.__classifier = classifier
 
@@ -55,6 +58,12 @@ class EvaluationParams:
     def test_examples(self) -> int:
         return self.__test_examples
 
+    def defense_params(self, defense_name: str) -> Optional[Dict[str, Any]]:
+        if self.__defense is None:
+            return None
+
+        return self.__defense[defense_name] if defense_name in self.__defense else None
+
     def feature_set_params(self, attack_name: str) -> Optional[Dict[str, Any]]:
         if self.__feature_set is None:
             return None
@@ -77,6 +86,7 @@ class EvaluationConfig:
                  train_test_delta: OffsetOrRange = 0,
                  train_examples: IntOrRange = 10,
                  test_examples: IntOrRange = 10,
+                 defense: Optional[Dict[str, Dict[str, Any]]] = None,
                  feature_set: Optional[Dict[str, Dict[str, Any]]] = None,
                  classifier: Optional[Dict[str, Dict[str, Any]]] = None):
         self.__websites = EvaluationConfig.parse_int_or_range(websites, 'websites', 2)
@@ -90,6 +100,7 @@ class EvaluationConfig:
         self.__train_examples = EvaluationConfig.parse_int_or_range(train_examples, "train_examples", 1)
         self.__test_examples = EvaluationConfig.parse_int_or_range(test_examples, "test_examples", 1)
 
+        self.__defense = defense
         self.__feature_set = feature_set
         self.__classifier = classifier
 
@@ -104,7 +115,7 @@ class EvaluationConfig:
                     for tr_ex in self.__train_examples:
                         for te_ex in self.__test_examples:
                             yield EvaluationParams(w, self.__runs, self.__metric, tr_off, delta, tr_ex, te_ex,
-                                                   self.__feature_set, self.__classifier)
+                                                   self.__defense, self.__feature_set, self.__classifier)
 
     @staticmethod
     def parse_int_or_range(value: IntOrRange, name: str, min_value: int = 0) -> Union[range, List[int]]:

@@ -8,7 +8,7 @@ from multiprocessing import Queue
 from os import remove, getcwd, chdir, listdir
 from os.path import join, isfile, isdir, sep, split
 from time import perf_counter
-from typing import Iterable, Optional, AsyncGenerator
+from typing import Iterable, Optional, AsyncGenerator, List, Type
 
 import curio
 import numpy as np
@@ -20,7 +20,7 @@ from pendulum import duration
 
 from ..api import Dataset
 from ..api.dataset import DatasetConfig
-from ..api.plugin import CliPlugin
+from ..api.plugin import CliModule
 from ..api.typing import OffsetOrDelta, SiteSelection
 from ..util.config import CONFIG, ConfigList, ConfigObject
 from ..util.dt import to_duration
@@ -62,7 +62,7 @@ class LiberatoreDatasetConfig(DatasetConfig):
                  files: Optional[ConfigList] = None,
                  extraction: Optional[ConfigObject] = None,
                  **kwargs):
-        super(LiberatoreDatasetConfig, self).__init__(**kwargs)
+        super(LiberatoreDatasetConfig, self).__init__(default_name='liberatore', **kwargs)
 
         self.__url = url
         _files = files.as_list() if files is not None else [
@@ -89,54 +89,28 @@ class LiberatoreDatasetConfig(DatasetConfig):
         return self.__extract
 
 
-_CONFIG = CONFIG.get_obj("datasets.liberatore").as_obj(LiberatoreDatasetConfig, default_name="liberatore")
+_CONFIG = CONFIG.get_obj("datasets.liberatore").as_obj(LiberatoreDatasetConfig)
 
 
-@group(name="liberatore",
-       chain=True,
-       short_help="Manage the liberatore dataset",
-       help="""Manage the liberatore dataset. 
-
-When using this command, multiple subcommands may be chained, e.g.
-
-python main.py dataset liberatore download extract process""")
-def __liberatore():
-    pass
+def cli_module() -> CliModule:
+    return CliModule(name="liberatore_dataset", dataset_commands=[__liberatore])
 
 
-@__liberatore.command(name="download", help="Download the liberatore dataset")
-@option("-f", "--force", help="Force the download even if the data is already there", is_flag=True)
-def download_liberatore(force: bool):
-    curio.run(partial(LiberatoreDataset.download, force=force))
+def plugin_path() -> str:
+    return 'core.datasets.liberatore'
 
 
-@__liberatore.command(name="extract", help="Extract the liberatore dataset")
-@option("-f", "--force", help="Force the extraction even if the data is already there", is_flag=True)
-def extract_liberatore(force: bool):
-    curio.run(partial(LiberatoreDataset.extract, force=force))
-
-
-@__liberatore.command(name="process", help="Read and process the PCAP traces")
-@option("-f", "--force", help="Force the process even if the data is already there", is_flag=True)
-def process_liberatore(force: bool):
-    curio.run(partial(LiberatoreDataset.process_traces, force=force))
-
-
-def cli_plugin() -> CliPlugin:
-    return CliPlugin(name="liberatore_dataset", dataset_commands=[__liberatore])
-
-
-def dataset() -> Dataset:
-    return LiberatoreDataset()
+def datasets() -> List[Type[Dataset]]:
+    return [LiberatoreDataset]
 
 
 class LiberatoreDataset(Dataset):
     def __init__(self, path: str = _CONFIG.path):
-        super(LiberatoreDataset, self).__init__(sites=2000, traces_per_site=205)
+        super(LiberatoreDataset, self).__init__(sites=2000, traces_per_site=205, config=_CONFIG)
         self.__path = path
 
-    @property
-    def name(self) -> str:
+    @staticmethod
+    def name() -> str:
         return "liberatore"
 
     async def load(self,
@@ -485,3 +459,33 @@ class LiberatoreDataset(Dataset):
             raise RuntimeError(stderr.decode())
         elif return_code != 0:
             raise RuntimeError(f"ptrepack exited with code {return_code}")
+
+
+@group(name="liberatore",
+       chain=True,
+       short_help="Manage the liberatore dataset",
+       help="""Manage the liberatore dataset. 
+
+When using this command, multiple subcommands may be chained, e.g.
+
+python main.py dataset liberatore download extract process""")
+def __liberatore():
+    pass
+
+
+@__liberatore.command(name="download", help="Download the liberatore dataset")
+@option("-f", "--force", help="Force the download even if the data is already there", is_flag=True)
+def __download_liberatore(force: bool):
+    curio.run(partial(LiberatoreDataset.download, force=force))
+
+
+@__liberatore.command(name="extract", help="Extract the liberatore dataset")
+@option("-f", "--force", help="Force the extraction even if the data is already there", is_flag=True)
+def __extract_liberatore(force: bool):
+    curio.run(partial(LiberatoreDataset.extract, force=force))
+
+
+@__liberatore.command(name="process", help="Read and process the PCAP traces")
+@option("-f", "--force", help="Force the process even if the data is already there", is_flag=True)
+def __process_liberatore(force: bool):
+    curio.run(partial(LiberatoreDataset.process_traces, force=force))

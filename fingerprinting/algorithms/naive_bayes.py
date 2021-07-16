@@ -1,33 +1,30 @@
+from typing import Optional
+
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.neighbors import KernelDensity
 
 # noinspection PyPep8Naming
-from fingerprinting.algorithms.kernel import KernelDensity1D
-from fingerprinting.util.pipeline import is_sparse_matrix
+from .kernel import KernelDensity1D
+from ..api.typing import Classifier
+from ..util.pipeline import is_sparse_matrix
+from logging import getLogger
+
+_LOGGER = getLogger(__name__)
 
 
-class KernelDensityNB(BaseEstimator, ClassifierMixin):
-    def __init__(self, priors=None, kernel='gaussian', bandwidth=1.0, kde="nd"):
-        if isinstance(priors, str) and priors != 'uniform':
-            raise ValueError("priors must be array-like, None (estimate prior), or 'uniform' (uniform prior)")
-        elif priors is not None and not isinstance(priors, str) and (not hasattr(priors, 'shape')
-                                                                     or len(priors.shape) != 1 or priors.shape[0] == 0):
-            raise ValueError("Class priors must be an array-like of shape (n_classes,)")
-
-        if kde != "1d" and kde != "nd":
-            raise ValueError("kde must be one of '1d', 'nd'")
-
-        # check valid kernel and bandwidth
-        if kde == 'nd':
-            KernelDensity(kernel=kernel, bandwidth=bandwidth)
-        elif kde == '1d':
-            KernelDensity1D(kernel=kernel, bandwidth=bandwidth)
-
+class KernelDensityNB(Classifier, BaseEstimator, ClassifierMixin):
+    def __init__(self, priors=None, kernel='gaussian', bandwidth=1.0, kde="nd", min_bandwidth: Optional[float] = None):
         self.priors = priors
+        self.kde = kde
+
+        self.__kernel = 'gaussian'
+        self.__bandwidth = 1.0
+        self.__min_bandwidth = None
+
         self.kernel = kernel
         self.bandwidth = bandwidth
-        self.kde = kde
+        self.min_bandwidth = min_bandwidth
 
         self.classes_ = np.array([])
         self.class_count_ = np.array([])
@@ -36,7 +33,7 @@ class KernelDensityNB(BaseEstimator, ClassifierMixin):
         self.models_ = np.array([])
 
     # noinspection PyPep8Naming
-    def fit(self, X, y) -> 'KernelDensityNB':
+    def fit(self, X, y, **fit_params) -> 'KernelDensityNB':
         self.classes_ = np.sort(np.unique(y))
 
         if is_sparse_matrix(X):
@@ -60,7 +57,9 @@ class KernelDensityNB(BaseEstimator, ClassifierMixin):
             # Use n-dimensional KDE (one model per class)
             self.models_ = [KernelDensity(kernel=self.kernel, bandwidth=self.bandwidth).fit(Xi) for Xi in training]
         else:
-            self.models_ = [KernelDensity1D(kernel=self.kernel, bandwidth=self.bandwidth).fit(Xi) for Xi in training]
+            # Use 1-dimensional KDE (one model per class)
+            self.models_ = [KernelDensity1D(kernel=self.kernel, bandwidth=self.bandwidth,
+                                            min_bandwidth=self.min_bandwidth).fit(Xi) for Xi in training]
 
         return self
 
@@ -70,3 +69,91 @@ class KernelDensityNB(BaseEstimator, ClassifierMixin):
         result = log_prob + self.log_prior_
 
         return self.classes_[np.argmax(result, axis=1)]
+
+    def get_params(self):
+        return {
+            'priors': self.priors,
+            'kernel': self.kernel,
+            'kde': self.kde,
+            'bandwidth': self.bandwidth,
+            'min_bandwidth': self.min_bandwidth
+        }
+
+    def set_params(self, **params):
+        if 'priors' in params:
+            self.priors = params['priors']
+        if 'kde' in params:
+            self.kde = params['kde']
+        if 'kernel' in params:
+            self.kernel = params['kernel']
+        if 'bandwidth' in params:
+            self.bandwidth = params['bandwidth']
+        if 'min_bandwidth' in params:
+            self.min_bandwidth = params['min_bandwidth']
+
+    @property
+    def priors(self):
+        return self.__priors
+
+    @priors.setter
+    def priors(self, priors):
+        if isinstance(priors, str) and priors != 'uniform':
+            raise ValueError("priors must be array-like, None (estimate prior), or 'uniform' (uniform prior)")
+        elif priors is not None and not isinstance(priors, str) and (not hasattr(priors, 'shape')
+                                                                     or len(priors.shape) != 1 or priors.shape[0] == 0):
+            raise ValueError("Class priors must be an array-like of shape (n_classes,)")
+
+        self.__priors = priors
+
+    @property
+    def kernel(self):
+        return self.__kernel
+
+    @kernel.setter
+    def kernel(self, kernel: str):
+        # check valid kernel
+        if self.kde == 'nd':
+            KernelDensity(kernel=kernel, bandwidth=self.bandwidth)
+        elif self.kde == '1d':
+            KernelDensity1D(kernel=kernel, bandwidth=self.bandwidth, min_bandwidth=self.min_bandwidth)
+
+        self.__kernel = kernel
+
+    @property
+    def kde(self):
+        return self.__kde
+
+    @kde.setter
+    def kde(self, kde: str):
+        if kde != "1d" and kde != "nd":
+            raise ValueError("kde must be one of '1d', 'nd'")
+
+        self.__kde = kde
+
+    @property
+    def bandwidth(self):
+        return self.__bandwidth
+
+    @bandwidth.setter
+    def bandwidth(self, bandwidth):
+        # check valid bandwidth
+        if self.kde == 'nd':
+            KernelDensity(kernel=self.kernel, bandwidth=bandwidth)
+        elif self.kde == '1d':
+            KernelDensity1D(kernel=self.kernel, bandwidth=bandwidth, min_bandwidth=self.min_bandwidth)
+
+        self.__bandwidth = bandwidth
+
+    @property
+    def min_bandwidth(self):
+        return self.__min_bandwidth
+
+    @min_bandwidth.setter
+    def min_bandwidth(self, min_bandwidth: Optional[float]):
+        # check valid min_bandwidth
+        if self.kde == "nd":
+            _LOGGER.warning("Got a min_bandwidth while kde = nd. n-dimensional KDE does not support min_bandwidth")
+        if self.kde == '1d':
+            KernelDensity1D(kernel=self.kernel, bandwidth=self.bandwidth, min_bandwidth=min_bandwidth)
+
+        self.__min_bandwidth = min_bandwidth

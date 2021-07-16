@@ -1,7 +1,7 @@
 from datetime import timedelta
 from logging import getLogger
 from os.path import join, isdir, abspath, isfile
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, List, Type
 
 import click
 import pandas as pd
@@ -10,7 +10,7 @@ from pendulum import duration, Duration
 
 from ..api import Dataset
 from ..api.dataset import DatasetConfig
-from ..api.plugin import CliPlugin
+from ..api.plugin import CliModule
 from ..api.typing import OffsetOrDelta, SiteSelection
 from ..util import mkdirs, TraceGenerator
 from ..util.config import CONFIG
@@ -53,37 +53,29 @@ _logger = getLogger(__name__)
 
 class DummyDatasetConfig(DatasetConfig):
     def __init__(self, trace_delta: Optional[str] = None, **kwargs):
-        super(DummyDatasetConfig, self).__init__(**kwargs)
+        super(DummyDatasetConfig, self).__init__(default_name='dummy', **kwargs)
 
         self.trace_delta: Duration = pendulum.parse(trace_delta or "P1D")
 
 
-_CONFIG = CONFIG.get_obj("datasets.dummy").as_obj(DummyDatasetConfig, default_name="dummy")
+_CONFIG = CONFIG.get_obj("datasets.dummy").as_obj(DummyDatasetConfig)
 
 
-@click.group("dummy", help="Manage the dummy dataset")
-def __dummy():
-    pass
+def cli_module() -> CliModule:
+    return CliModule(name="dummy_dataset", dataset_commands=[__dummy])
 
 
-@__dummy.command("generate", help="Generate new traces for the dummy dataset")
-@click.option("-b", "--base", help="The dataset's base directory", type=str, default=_CONFIG.path, show_default=True)
-@click.option("-f", "--force", help="Ignore already existing files and recreate them", is_flag=True)
-def __generate_dummy(base: str, force: bool):
-    DummyDataset.generate(dataset_base=base, force=force)
+def plugin_path() -> str:
+    return 'core.datasets.dummy'
 
 
-def cli_plugin() -> CliPlugin:
-    return CliPlugin(name="dummy_dataset", dataset_commands=[__dummy])
-
-
-def dataset() -> Dataset:
-    return DummyDataset()
+def datasets() -> List[Type[Dataset]]:
+    return [DummyDataset]
 
 
 class DummyDataset(Dataset):
     def __init__(self, path: str = _CONFIG.path):
-        super(DummyDataset, self).__init__(sites=5, traces_per_site=50)
+        super(DummyDataset, self).__init__(sites=5, traces_per_site=50, config=_CONFIG)
 
         if not isdir(path) and not isfile(path):
             mkdirs(path)
@@ -92,8 +84,8 @@ class DummyDataset(Dataset):
 
         self.__path = abspath(path)
 
-    @property
-    def name(self) -> str:
+    @staticmethod
+    def name() -> str:
         return "dummy"
 
     async def load(self,
@@ -172,3 +164,15 @@ class DummyDataset(Dataset):
             return delta // trace_delta
         else:
             return delta // trace_delta + 1
+
+
+@click.group("dummy", help="Manage the dummy dataset")
+def __dummy():
+    pass
+
+
+@__dummy.command("generate", help="Generate new traces for the dummy dataset")
+@click.option("-b", "--base", help="The dataset's base directory", type=str, default=_CONFIG.path, show_default=True)
+@click.option("-f", "--force", help="Ignore already existing files and recreate them", is_flag=True)
+def __generate_dummy(base: str, force: bool):
+    DummyDataset.generate(dataset_base=base, force=force)

@@ -1,2 +1,2 @@
-from .padding import PadToMTU, PacketRandom255, SessionRandom255, LinearPadding, ExponentialPadding, \
-    MiceElephantsPadding, PacketRandomMTU
+from .randomized import PacketRandom255, SessionRandom255, PacketRandomMTU, PacketRandomGaussian
+from .deterministic import LinearPadding, ExponentialPadding, MiceElephantsPadding, PadToMTU

@@ -4,7 +4,7 @@ import numpy as np
 import scipy.sparse as sp
 from asyncstdlib.itertools import aiter
 
-from fingerprinting.api.typing import LabelledExamples, TracesStream, TraceProcessor, Traces, ExampleStream, Examples, \
+from ..api.typing import LabelledExamples, TracesStream, TraceProcessor, Traces, ExampleStream, Examples, \
     LabelledExampleStream
 
 
