@@ -72,4 +72,4 @@ def markers(bursts: pd.DataFrame, column: str, marker_id: str, attributes: Set[s
 
 
 def empty_markers(traces: Traces):
-    return pd.DataFrame(index=traces.index.unique())
+    return pd.DataFrame(index=traces.set_index(["site_id", "trace_id"]).index.unique())

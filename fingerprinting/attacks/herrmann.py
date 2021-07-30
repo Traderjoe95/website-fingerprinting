@@ -17,10 +17,10 @@ def attacks() -> List[Type[AttackDefinition]]:
 
 
 class Herrmann(AttackDefinition):
-    def _create_featureset(self) -> FeatureSet:
+    def create_feature_set(self) -> FeatureSet:
         return PacketHistogram() / TfidfTransformer(use_idf=True, sublinear_tf=True, norm='l2')
 
-    def _create_classifier(self) -> Classifier:
+    def create_classifier(self) -> Classifier:
         return MultinomialNB()
 
     @staticmethod

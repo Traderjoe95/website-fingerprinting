@@ -11,8 +11,8 @@ from typing import AsyncIterable, AsyncGenerator, Tuple, Optional, Iterable, Uni
 import curio
 import numpy as np
 import pandas as pd
-from asyncstdlib import tee
-from sklearn.metrics import accuracy_score  #
+from asyncstdlib import tee, iter as aiter
+from sklearn.metrics import accuracy_score
 
 from .dataset import DatasetConfig
 from .evaluation import EvaluationConfig
@@ -163,8 +163,13 @@ class Dataset(StaticNamed, metaclass=ABCMeta):
         ...
 
     @property
-    def sites(self):
-        return self.__sites
+    def sites(self) -> Union[range, List[int]]:
+        sites = self.__config.sites or self.__sites
+
+        if isinstance(sites, int):
+            return range(sites)
+
+        return list(sites)
 
     @property
     def traces_per_site(self) -> int:
@@ -356,6 +361,11 @@ class FeatureSet(HasParams, metaclass=ABCMeta):
         self.reset()
         return await self._do_extract(train_traces, test_traces)
 
+    async def extract_features_single(self, traces: TracesStream) -> LabelledExampleStream:
+        examples, _ = await self.extract_features(traces, aiter([]))
+
+        return examples
+
     @abstractmethod
     async def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
         ...
@@ -479,8 +489,8 @@ class AttackDefinition(StaticNamed, metaclass=ABCMeta):
                     classes: Optional[np.ndarray] = None,
                     featureset_params: Optional[Dict[str, Any]] = None,
                     classifier_params: Optional[Dict[str, Any]] = None) -> 'AttackInstance':
-        fts = self._create_featureset()
-        clf = self._create_classifier()
+        fts = self.create_feature_set()
+        clf = self.create_classifier()
 
         fts.set_params(**(featureset_params or {}))
         clf.set_params(**(classifier_params or {}))
@@ -488,7 +498,7 @@ class AttackDefinition(StaticNamed, metaclass=ABCMeta):
         return AttackInstance(fts, clf, classes)
 
     @abstractmethod
-    def _create_featureset(self) -> FeatureSet:
+    def create_feature_set(self) -> FeatureSet:
         """
         Creates a default instance of the attack's feature set.
 
@@ -497,7 +507,7 @@ class AttackDefinition(StaticNamed, metaclass=ABCMeta):
         ...
 
     @abstractmethod
-    def _create_classifier(self) -> Classifier:
+    def create_classifier(self) -> Classifier:
         """
         Creates a default instance of the attack's classifier.
 
@@ -647,7 +657,7 @@ class EvaluationPipeline:
                     runner = partial(self._score_worker, metric=params.metric)
 
                     for run in range(params.runs):
-                        sites = random.sample(site_ids or range(dataset.sites), k=params.websites)
+                        sites = random.sample(site_ids or dataset.sites, k=params.websites)
                         classes = dataset.labels(sites).values
 
                         train, test = dataset.load_train_test(train_examples_per_site=params.train_examples,

@@ -89,16 +89,16 @@ class EvaluationConfig:
                  defense: Optional[Dict[str, Dict[str, Any]]] = None,
                  feature_set: Optional[Dict[str, Dict[str, Any]]] = None,
                  classifier: Optional[Dict[str, Dict[str, Any]]] = None):
-        self.__websites = EvaluationConfig.parse_int_or_range(websites, 'websites', 2)
+        self.__websites = parse_int_or_range(websites, 'websites', 2)
         self.__runs = runs
 
         self.__metric = resolve_metric(metric)
 
-        self.__train_offset = EvaluationConfig.parse_offset_or_range(train_offset, "train_offset")
-        self.__train_test_delta = EvaluationConfig.parse_offset_or_range(train_test_delta, "train_test_delta")
+        self.__train_offset = parse_offset_or_range(train_offset, "train_offset")
+        self.__train_test_delta = parse_offset_or_range(train_test_delta, "train_test_delta")
 
-        self.__train_examples = EvaluationConfig.parse_int_or_range(train_examples, "train_examples", 1)
-        self.__test_examples = EvaluationConfig.parse_int_or_range(test_examples, "test_examples", 1)
+        self.__train_examples = parse_int_or_range(train_examples, "train_examples", 1)
+        self.__test_examples = parse_int_or_range(test_examples, "test_examples", 1)
 
         self.__defense = defense
         self.__feature_set = feature_set
@@ -117,82 +117,82 @@ class EvaluationConfig:
                             yield EvaluationParams(w, self.__runs, self.__metric, tr_off, delta, tr_ex, te_ex,
                                                    self.__defense, self.__feature_set, self.__classifier)
 
-    @staticmethod
-    def parse_int_or_range(value: IntOrRange, name: str, min_value: int = 0) -> Union[range, List[int]]:
-        if isinstance(value, list) or isinstance(value, range):
-            if len(value) == 0:
-                raise ValueError(f"At least one value is required for {name}")
-            if any(x < min_value for x in value):
-                raise ValueError(f"Only integer values greater than or equal to {min_value} are allowed for {name}")
 
-            return sorted(set(value)) if isinstance(value, list) else value
-        elif isinstance(value, int):
-            return EvaluationConfig.parse_int_or_range([value], name, min_value)
+def parse_int_or_range(value: IntOrRange, name: str, min_value: int = 0) -> Union[range, List[int]]:
+    if isinstance(value, list) or isinstance(value, range):
+        if len(value) == 0:
+            raise ValueError(f"At least one value is required for {name}")
+        if any(x < min_value for x in value):
+            raise ValueError(f"Only integer values greater than or equal to {min_value} are allowed for {name}")
+
+        return sorted(set(value)) if isinstance(value, list) else value
+    elif isinstance(value, int):
+        return EvaluationConfig.parse_int_or_range([value], name, min_value)
+    else:
+        value = re.sub(r'\s+', '', value)
+        if ".." in value:
+            # range syntax
+            pattern = re.compile(r'^(?P<start>0|[1-9][0-9]*)?\.\.(?P<end>[1-9][0-9]*)(%(?P<step>[1-9][0-9]*))?$')
+            match = pattern.fullmatch(value)
+
+            if not match:
+                raise ValueError(f"Invalid value '{value}' for '{name}': Must be 'start..end' or 'start..end%step'")
+
+            start = int(match.group("start") or min_value)
+            end = int(match.group("end"))
+            step = int(match.group("step") or "1")
+
+            if step <= 0:
+                raise ValueError(f"The range step size must be positive for {name}")
+
+            return parse_int_or_range(range(start, end, step), name, min_value)
+        elif "," in value:
+            # comma-separated list syntax
+            return parse_int_or_range([int(x.strip()) for x in value.split(",")], name, min_value)
         else:
-            value = re.sub(r'\s+', '', value)
-            if ".." in value:
-                # range syntax
-                pattern = re.compile(r'^(?P<start>0|[1-9][0-9]*)?\.\.(?P<end>[1-9][0-9]*)(%(?P<step>[1-9][0-9]*))?$')
-                match = pattern.fullmatch(value)
+            # int as str
+            return parse_int_or_range([int(value)], name, min_value)
 
-                if not match:
-                    raise ValueError(f"Invalid value '{value}' for '{name}': Must be 'start..end' or 'start..end%step'")
 
-                start = int(match.group("start") or min_value)
-                end = int(match.group("end"))
-                step = int(match.group("step") or "1")
+def parse_offset_or_range(value: OffsetOrRange, name: str) -> Union[range, List[OffsetOrDelta]]:
+    if isinstance(value, range):
+        if len(value) == 0:
+            raise ValueError(f"At least one value is required for {name}")
+        if min(value) < 0:
+            raise ValueError(f"Only non-negative integers are allowed for {name}")
 
-                if step <= 0:
-                    raise ValueError(f"The range step size must be positive for {name}")
+        return value
+    elif isinstance(value, list):
+        result: List[OffsetOrDelta] = []
 
-                return EvaluationConfig.parse_int_or_range(range(start, end, step), name, min_value)
-            elif "," in value:
-                # comma-separated list syntax
-                return EvaluationConfig.parse_int_or_range([int(x.strip()) for x in value.split(",")], name, min_value)
-            else:
-                # int as str
-                return EvaluationConfig.parse_int_or_range([int(value)], name, min_value)
+        for elem in value:
+            if isinstance(elem, str):
+                if elem.startswith("P"):
+                    elem = pendulum.parse(elem)
+                else:
+                    result += list(parse_int_or_range(elem, name))
+                    continue
 
-    @staticmethod
-    def parse_offset_or_range(value: OffsetOrRange, name: str) -> Union[range, List[OffsetOrDelta]]:
-        if isinstance(value, range):
-            if len(value) == 0:
-                raise ValueError(f"At least one value is required for {name}")
-            if min(value) < 0:
-                raise ValueError(f"Only non-negative integers are allowed for {name}")
+            if isinstance(elem, int):
+                if elem < 0:
+                    raise ValueError(f"Only non-negative integers are allowed for {name}")
+                result.append(elem)
+            elif isinstance(elem, timedelta):
+                if elem < duration():
+                    raise ValueError(f"Only non-negative deltas are allowed for {name}")
+                result.append(elem)
 
-            return value
-        elif isinstance(value, list):
-            result: List[OffsetOrDelta] = []
-
-            for elem in value:
-                if isinstance(elem, str):
-                    if elem.startswith("P"):
-                        elem = pendulum.parse(elem)
-                    else:
-                        result += list(EvaluationConfig.parse_int_or_range(elem, name))
-                        continue
-
-                if isinstance(elem, int):
-                    if elem < 0:
-                        raise ValueError(f"Only non-negative integers are allowed for {name}")
-                    result.append(elem)
-                elif isinstance(elem, timedelta):
-                    if elem < duration():
-                        raise ValueError(f"Only non-negative deltas are allowed for {name}")
-                    result.append(elem)
-
-            return result
-        elif isinstance(value, int):
+        return result
+    elif isinstance(value, int):
+        # noinspection Mypy
+        return parse_int_or_range(value, name)
+    elif isinstance(value, timedelta):
+        if value < duration():
+            raise ValueError(f"Only non-negative deltas are allowed for {name}")
+        return [value]
+    else:
+        if value.startswith("P"):
+            return parse_offset_or_range(pendulum.parse(value), name)
+        else:
             # noinspection Mypy
-            return EvaluationConfig.parse_int_or_range(value, name)
-        elif isinstance(value, timedelta):
-            if value < duration():
-                raise ValueError(f"Only non-negative deltas are allowed for {name}")
-            return [value]
-        else:
-            if value.startswith("P"):
-                return EvaluationConfig.parse_offset_or_range(pendulum.parse(value), name)
-            else:
-                # noinspection Mypy
-                return EvaluationConfig.parse_int_or_range(value, name)
+            return parse_int_or_range(value, name)

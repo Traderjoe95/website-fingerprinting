@@ -16,10 +16,10 @@ def attacks() -> List[Type[AttackDefinition]]:
 
 
 class Jaccard(AttackDefinition):
-    def _create_featureset(self) -> FeatureSet:
+    def create_feature_set(self) -> FeatureSet:
         return PacketSet()
 
-    def _create_classifier(self) -> Classifier:
+    def create_classifier(self) -> Classifier:
         return JaccardClassifier(alpha=0.1)
 
     @staticmethod
@@ -28,10 +28,10 @@ class Jaccard(AttackDefinition):
 
 
 class LiberatoreNB(AttackDefinition):
-    def _create_featureset(self) -> FeatureSet:
+    def create_feature_set(self) -> FeatureSet:
         return PacketHistogram()
 
-    def _create_classifier(self) -> Classifier:
+    def create_classifier(self) -> Classifier:
         return KernelDensityNB(priors='uniform', kde='1d', bandwidth='weka')
 
     @staticmethod

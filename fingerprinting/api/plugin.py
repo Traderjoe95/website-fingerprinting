@@ -5,7 +5,6 @@ from logging import getLogger
 from typing import Iterable, Optional, Any, Dict, Type, List, Set, Union
 
 from click import Group
-from pymonad.either import Left, Right
 from typing_extensions import Protocol, runtime_checkable
 
 from .pipeline import Dataset, Defense, AttackDefinition
@@ -180,8 +179,8 @@ class AmbiguousAlgorithms(PluginError):
 
 
 class ApplicationContext:
-    def __init__(self, click_root: Group):
-        self.__click = click_root
+    def __init__(self):
+        self.__click = None
 
         self.__installed_plugins: Set[str] = set()
 
@@ -191,9 +190,8 @@ class ApplicationContext:
 
         self.__tree: Dict[str, Any] = {}
 
-    @staticmethod
-    def of(*, click_root) -> 'ApplicationContext':
-        return ApplicationContext(click_root)
+    def set_root(self, click_root: Group):
+        self.__click = click_root
 
     def __contains__(self, plugin: Plugin):
         return plugin.plugin_path() in self.__installed_plugins
@@ -458,7 +456,8 @@ def load_core_modules(ctx: ApplicationContext) -> None:
     for mod in [
         ".datasets.dummy", ".datasets.liberatore",
         ".defenses.deterministic", ".defenses.randomized",
-        ".attacks.dyer", ".attacks.herrmann", ".attacks.liberatore", ".attacks.panchenko"
+        ".attacks.dyer", ".attacks.herrmann", ".attacks.liberatore", ".attacks.panchenko",
+        ".cli.evaluation", ".cli.error_bound"
     ]:
         install(mod, ctx)
 

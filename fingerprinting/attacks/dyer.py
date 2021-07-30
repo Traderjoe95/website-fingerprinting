@@ -15,10 +15,10 @@ def attacks() -> List[Type[AttackDefinition]]:
 
 
 class Time(AttackDefinition):
-    def _create_featureset(self) -> FeatureSet:
+    def create_feature_set(self) -> FeatureSet:
         return TimeFeatures()
 
-    def _create_classifier(self) -> Classifier:
+    def create_classifier(self) -> Classifier:
         return KernelDensityNB(priors='uniform', kde="1d", bandwidth='weka')
 
     @staticmethod
@@ -27,10 +27,10 @@ class Time(AttackDefinition):
 
 
 class Bandwidth(AttackDefinition):
-    def _create_featureset(self) -> FeatureSet:
+    def create_feature_set(self) -> FeatureSet:
         return BandwidthFeatures()
 
-    def _create_classifier(self) -> Classifier:
+    def create_classifier(self) -> Classifier:
         return KernelDensityNB(priors='uniform', kde="1d", bandwidth='weka')
 
     @staticmethod
@@ -39,10 +39,10 @@ class Bandwidth(AttackDefinition):
 
 
 class VNG(AttackDefinition):
-    def _create_featureset(self) -> FeatureSet:
+    def create_feature_set(self) -> FeatureSet:
         return VariableNGram()
 
-    def _create_classifier(self) -> Classifier:
+    def create_classifier(self) -> Classifier:
         return KernelDensityNB(priors='uniform', kde="1d", bandwidth='weka')
 
     @staticmethod
@@ -51,10 +51,10 @@ class VNG(AttackDefinition):
 
 
 class VNGPlusPlus(AttackDefinition):
-    def _create_featureset(self) -> FeatureSet:
+    def create_feature_set(self) -> FeatureSet:
         return TimeFeatures() + BandwidthFeatures() + VariableNGram()
 
-    def _create_classifier(self) -> Classifier:
+    def create_classifier(self) -> Classifier:
         return KernelDensityNB(priors='uniform', kde="1d", bandwidth='weka')
 
     @staticmethod

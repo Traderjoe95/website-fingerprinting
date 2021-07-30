@@ -52,6 +52,12 @@ def is_sparse_matrix(arr) -> bool:
     return type(arr).__module__.startswith("scipy.sparse")
 
 
+def dense(arr) -> np.ndarray:
+    if is_sparse_matrix(arr):
+        return arr.todense()
+    return arr
+
+
 async def __await(traces: Union[Traces, Awaitable[Traces]]) -> Traces:
     if isinstance(traces, Traces):
         return traces

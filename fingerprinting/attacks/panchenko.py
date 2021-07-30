@@ -17,10 +17,10 @@ def attacks() -> List[Type[AttackDefinition]]:
 
 
 class Panchenko(AttackDefinition):
-    def _create_featureset(self) -> FeatureSet:
+    def create_feature_set(self) -> FeatureSet:
         return PacketHistogram() + PanchenkoMarkers()
 
-    def _create_classifier(self) -> Classifier:
+    def create_classifier(self) -> Classifier:
         return SVC(C=131072, kernel="rbf", gamma=1.9073486328125e-06)
 
     @staticmethod
@@ -29,10 +29,10 @@ class Panchenko(AttackDefinition):
 
 
 class PanchenkoNB(AttackDefinition):
-    def _create_featureset(self) -> FeatureSet:
+    def create_feature_set(self) -> FeatureSet:
         return PacketHistogram() + PanchenkoMarkers()
 
-    def _create_classifier(self) -> Classifier:
+    def create_classifier(self) -> Classifier:
         return KernelDensityNB(priors='uniform', kde="1d", bandwidth='weka')
 
     @staticmethod
