@@ -1,3 +1,4 @@
+import random
 import re
 from datetime import timedelta
 from typing import Optional, Dict, Any, Union, List, Iterator
@@ -6,8 +7,8 @@ import pendulum
 from pendulum import duration
 from sklearn.metrics import accuracy_score
 
-from ..algorithms.metrics import resolve_metric
 from .typing import MetricOrName, OffsetOrDelta, Metric
+from ..algorithms.metrics import resolve_metric
 
 IntOrRange = Union[int, str, range, List[int]]
 OffsetOrRange = Union[OffsetOrDelta, str, range, List[Union[str, OffsetOrDelta]]]
@@ -94,7 +95,11 @@ class EvaluationConfig:
 
         self.__metric = resolve_metric(metric)
 
-        self.__train_offset = parse_offset_or_range(train_offset, "train_offset")
+        if train_offset == 'randomize':
+            self.__train_offset = [None]
+        else:
+            self.__train_offset = parse_offset_or_range(train_offset, "train_offset")
+
         self.__train_test_delta = parse_offset_or_range(train_test_delta, "train_test_delta")
 
         self.__train_examples = parse_int_or_range(train_examples, "train_examples", 1)
@@ -108,12 +113,16 @@ class EvaluationConfig:
         return self.__runs * len(self.__websites) * len(self.__train_offset) * len(self.__train_test_delta) * len(
             self.__train_examples) * len(self.__test_examples)
 
-    def __iter__(self) -> Iterator[EvaluationParams]:
+    def runs(self, dataset) -> Iterator[EvaluationParams]:
         for w in self.__websites:
             for tr_off in self.__train_offset:
                 for delta in self.__train_test_delta:
                     for tr_ex in self.__train_examples:
                         for te_ex in self.__test_examples:
+                            if tr_off is None:
+                                max_offset = dataset.traces_per_site - tr_ex - te_ex
+                                tr_off = random.randint(0, max_offset)
+
                             yield EvaluationParams(w, self.__runs, self.__metric, tr_off, delta, tr_ex, te_ex,
                                                    self.__defense, self.__feature_set, self.__classifier)
 
@@ -127,7 +136,7 @@ def parse_int_or_range(value: IntOrRange, name: str, min_value: int = 0) -> Unio
 
         return sorted(set(value)) if isinstance(value, list) else value
     elif isinstance(value, int):
-        return EvaluationConfig.parse_int_or_range([value], name, min_value)
+        return parse_int_or_range([value], name, min_value)
     else:
         value = re.sub(r'\s+', '', value)
         if ".." in value:

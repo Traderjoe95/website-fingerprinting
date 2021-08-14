@@ -17,12 +17,12 @@ SQRT_2PI = np.sqrt(2 * np.pi)
 # noinspection PyPep8Naming
 class KernelDensity1D(HasParams, BaseEstimator, DensityMixin):
     def __init__(self, bandwidth: Union[str, float, np.ndarray] = 1., kernel: str = 'gaussian',
-                 min_bandwidth: Optional[float] = None):
+                 min_bandwidth: Optional[float] = None, precision: Optional[np.ndarray] = None):
         self.__model: Optional[np.ndarray] = None
         self.__dirty = False
 
         self.bandwidth_: Optional[np.ndarray] = None
-        self.precision_: Optional[np.ndarray] = None
+        self.precision_: Optional[np.ndarray] = precision
 
         self.bandwidth = bandwidth
         self.min_bandwidth = min_bandwidth
@@ -104,7 +104,10 @@ class KernelDensity1D(HasParams, BaseEstimator, DensityMixin):
 
     def fit(self, X, y=None) -> 'KernelDensity1D':
         self.__model = None
-        return self.partial_fit(X, y)
+        self.partial_fit(X, y)
+        self.__estimate_bandwidth()
+        self.__dirty = False
+        return self
 
     def score(self, X, y=None) -> float:
         return np.sum(self.score_samples(X))
@@ -127,6 +130,7 @@ class KernelDensity1D(HasParams, BaseEstimator, DensityMixin):
 
         if is_sparse_matrix(X):
             X = np.asarray(X.todense())
+        X = self.__round(X)
 
         model_3d = np.transpose(np.broadcast_to(np.atleast_3d(self.__model), (model_size, feature_count, sample_count)),
                                 axes=(2, 0, 1)).astype(np.float32)
@@ -146,6 +150,9 @@ class KernelDensity1D(HasParams, BaseEstimator, DensityMixin):
         return np.sum(np.log(kernel_estimate), axis=1)
 
     def __estimate_bandwidth(self):
+        if self.precision_ is None:
+            self.precision_ = weka_precision(np.sort(self.__model, axis=0))
+
         if isinstance(self.__bandwidth, str):
             if self.__bandwidth == 'scott':
                 estimator = scott
@@ -158,8 +165,11 @@ class KernelDensity1D(HasParams, BaseEstimator, DensityMixin):
             else:
                 estimator = sheather_jones
 
+            prec = self.precision_.reshape((1, self.precision_.shape[0]))
+            self.__model = self.__round(self.__model)
+
             min_h = self.min_bandwidth or 0
-            h = np.squeeze(estimator(self.__model))
+            h = np.squeeze(estimator(self.__model, precision=self.precision_))
             self.bandwidth_ = np.maximum(h, min_h)
         elif isinstance(self.__bandwidth, float):
             self.bandwidth_ = np.ones(self.__model.shape[1]) * np.maximum(self.__bandwidth, self.min_bandwidth or 0.)
@@ -169,7 +179,12 @@ class KernelDensity1D(HasParams, BaseEstimator, DensityMixin):
                                  f"but got {self.__bandwidth.shape[0]}")
             self.bandwidth_ = np.maximum(self.__bandwidth, self.min_bandwidth or 0.)
 
-        self.precision_ = weka_precision(np.sort(self.__model, axis=0))
+    def __round(self, data):
+        prec = self.precision_.reshape((1, self.precision_.shape[0]))
+        return np.rint(data / prec) * prec
+
+    def get_params(self, deep):
+        return {'bandwidth': self.bandwidth, 'min_bandwidth': self.min_bandwidth, 'kernel': self.kernel}
 
 
 # noinspection PyPep8Naming

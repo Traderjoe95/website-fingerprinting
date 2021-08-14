@@ -1,13 +1,14 @@
 from abc import ABCMeta, abstractmethod
-from typing import AsyncGenerator, AsyncIterable, Dict, Any
+from itertools import tee
+from typing import Dict, Any
 
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
-from asyncstdlib.itertools import tee, zip
 
 from .pipeline import FeatureSet
-from .typing import Transformer, StreamableTransformer, LabelledExamples, TrainTestSplit, TracesStream, HasParams
+from .typing import Transformer, StreamableTransformer, LabelledExamples, LabelledExampleStream, TrainTestSplit, \
+    TracesStream, HasParams
 from ..util.pipeline import collect, is_sparse_matrix
 
 
@@ -16,15 +17,15 @@ class StatelessFeatureSet(FeatureSet, metaclass=ABCMeta):
     The base class for a feature set that does not require fitting.
     """
 
-    async def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
+    def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
         return self._extract_all(train_traces), self._extract_all(test_traces)
 
-    async def _extract_all(self, traces_stream: TracesStream) -> AsyncGenerator[LabelledExamples, None]:
-        async for traces in traces_stream:
-            yield await self._extract(traces)
+    def _extract_all(self, traces_stream: TracesStream) -> LabelledExampleStream:
+        for traces in traces_stream:
+            yield self._extract(traces)
 
     @abstractmethod
-    async def _extract(self, traces: pd.DataFrame) -> LabelledExamples:
+    def _extract(self, traces: pd.DataFrame) -> LabelledExamples:
         ...
 
     def reset(self):
@@ -36,12 +37,12 @@ class CombinedFeatureSet(FeatureSet):
         self.__left = left
         self.__right = right
 
-    async def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
-        _left_train, _right_train = tee(train_traces, n=2)
-        _left_test, _right_test = tee(test_traces, n=2)
+    def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
+        _left_train, _right_train = tee(train_traces, 2)
+        _left_test, _right_test = tee(test_traces,  2)
 
-        left_train, left_test = await self.__left.extract_features(_left_train, _left_test)
-        right_train, right_test = await self.__right.extract_features(_right_train, _right_test)
+        left_train, left_test = self.__left.extract_features(_left_train, _left_test)
+        right_train, right_test = self.__right.extract_features(_right_train, _right_test)
 
         return _combine_all_features(left_train, right_train), _combine_all_features(left_test, right_test)
 
@@ -61,8 +62,8 @@ class StatelessCombinedFeatureSet(StatelessFeatureSet):
         self.__left = left
         self.__right = right
 
-    async def _extract(self, traces: pd.DataFrame) -> LabelledExamples:
-        return _combine_features(await self.__left._extract(traces), await self.__right._extract(traces))
+    def _extract(self, traces: pd.DataFrame) -> LabelledExamples:
+        return _combine_features(self.__left._extract(traces), self.__right._extract(traces))
 
     def get_params(self):
         return _get_combined_params(self.__left, self.__right)
@@ -97,21 +98,21 @@ class TransformedFeatureSet(FeatureSet):
         self.__features = features
         self.__transformer = transformer
 
-    async def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
-        train, test = await self.__features.extract_features(train_traces, test_traces)
-        train_trans, train = tee(train, n=2)
+    def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
+        train, test = self.__features.extract_features(train_traces, test_traces)
+        train_trans, train = tee(train, 2)
 
         if isinstance(self.__transformer, StreamableTransformer):
-            async for examples, labels in train_trans:
+            for examples, labels in train_trans:
                 self.__transformer.partial_fit(examples, labels)
         else:
-            examples, labels = await collect(train_trans)
+            examples, labels = collect(train_trans)
             self.__transformer.fit(examples, labels)
 
         return self.__transform_all(train), self.__transform_all(test)
 
-    async def __transform_all(self, features: AsyncIterable[LabelledExamples]) -> AsyncIterable[LabelledExamples]:
-        async for examples, labels in features:
+    def __transform_all(self, features: LabelledExampleStream) -> LabelledExampleStream:
+        for examples, labels in features:
             yield self.__transformer.transform(examples), labels
 
     def get_params(self):
@@ -124,10 +125,10 @@ class TransformedFeatureSet(FeatureSet):
         self.__features.reset()
 
 
-async def _combine_all_features(
-    left_stream: AsyncIterable[LabelledExamples], right_stream: AsyncIterable[LabelledExamples]
-) -> AsyncGenerator[LabelledExamples, None]:
-    async for left, right in zip(left_stream, right_stream, strict=True):
+def _combine_all_features(
+    left_stream: LabelledExampleStream, right_stream: LabelledExampleStream
+) -> LabelledExampleStream:
+    for left, right in zip(left_stream, right_stream):
         yield _combine_features(left, right)
 
 

@@ -1,9 +1,17 @@
 import re
-from typing import Optional, List, Union, Set
+from typing import Optional, List, Union, Set, Callable
+from os.path import join
 
+import numpy as np
 import pandas as pd
 
 from fingerprinting.api.typing import SiteSelection
+
+
+_FILTERS = {
+    'drop_ack': lambda traces: traces[np.abs(traces["size"]) != 52].copy(),
+    'time_as_int': lambda traces: traces.assign(time=traces['time'].astype(np.uint32))
+}
 
 
 class DatasetConfig:
@@ -11,7 +19,10 @@ class DatasetConfig:
                  default_name: str,
                  name: Optional[str] = None,
                  path: Optional[str] = None,
-                 sites: Union[List[int], str, range, Set[int], int] = None):
+                 sites: Union[List[int], str, range, Set[int], int] = None,
+                 filters: Optional[List[str]] = None):
+        if filters is None:
+            filters = []
         if name is None:
             name = default_name
 
@@ -47,9 +58,18 @@ class DatasetConfig:
             sites = set(sites)
 
         self.__name = name
-        self.__path = path or f"data/{self.name}"
+        self.__path = path or join("data", self.name)
 
         self.__sites = sites
+
+        self.__filters: List[Callable[[pd.DataFrame], pd.DataFrame]] = []
+
+        for f in set(f.lower() for f in filters):
+            if f not in _FILTERS:
+                raise ValueError(f"Unknown filter '{f}', possible values are {set(_FILTERS.keys())}")
+
+            self.__filters.append(_FILTERS[f])
+
 
     @property
     def name(self) -> str:
@@ -62,3 +82,8 @@ class DatasetConfig:
     @property
     def sites(self) -> SiteSelection:
         return self.__sites
+
+    @property
+    def filters(self) -> List[Callable[[pd.DataFrame], pd.DataFrame]]:
+        return self.__filters
+

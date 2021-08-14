@@ -5,6 +5,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.neighbors import KernelDensity
 
 # noinspection PyPep8Naming
+from .bandwidth import weka_precision
 from .kernel import KernelDensity1D
 from ..api.typing import Classifier
 from ..util.pipeline import is_sparse_matrix
@@ -37,7 +38,7 @@ class KernelDensityNB(Classifier, BaseEstimator, ClassifierMixin):
         self.classes_ = np.sort(np.unique(y))
 
         if is_sparse_matrix(X):
-            X = X.todense()
+            X = np.asarray(X.todense())
 
         training = [X[y == yi] for yi in self.classes_]
         self.class_count_ = np.array([Xi.shape[0] for Xi in training])
@@ -57,8 +58,10 @@ class KernelDensityNB(Classifier, BaseEstimator, ClassifierMixin):
             # Use n-dimensional KDE (one model per class)
             self.models_ = [KernelDensity(kernel=self.kernel, bandwidth=self.bandwidth).fit(Xi) for Xi in training]
         else:
+            # Calculate precision per attribute first
+            precision = np.squeeze(weka_precision(np.sort(X, axis=0)))
             # Use 1-dimensional KDE (one model per class)
-            self.models_ = [KernelDensity1D(kernel=self.kernel, bandwidth=self.bandwidth,
+            self.models_ = [KernelDensity1D(kernel=self.kernel, bandwidth=self.bandwidth, precision=precision,
                                             min_bandwidth=self.min_bandwidth).fit(Xi) for Xi in training]
 
         return self
@@ -70,7 +73,7 @@ class KernelDensityNB(Classifier, BaseEstimator, ClassifierMixin):
 
         return self.classes_[np.argmax(result, axis=1)]
 
-    def get_params(self):
+    def get_params(self, **kwargs):
         return {
             'priors': self.priors,
             'kernel': self.kernel,

@@ -7,6 +7,7 @@ import pandas as pd
 
 from ..api import Defense
 from ..api.defense import StatelessDefense
+from ..api.typing import Traces
 
 
 def plugin_path() -> str:
@@ -25,7 +26,7 @@ class _RandomizedPadding(StatelessDefense, metaclass=ABCMeta):
     def _sample(self, sizes: np.ndarray, site_ids: np.ndarray, trace_ids: np.ndarray) -> np.ndarray:
         pass
 
-    async def defend(self, traces: pd.DataFrame) -> pd.DataFrame:
+    def defend(self, traces: Traces) -> Traces:
         packets = traces["size"].values
         direction = np.clip(packets, -1, 1)
 

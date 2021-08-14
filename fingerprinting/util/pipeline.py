@@ -1,4 +1,4 @@
-from typing import AsyncIterable, AsyncGenerator, Tuple, Union, Awaitable
+from typing import AsyncIterable, AsyncGenerator, Tuple, Union, Awaitable, Generator
 
 import numpy as np
 import scipy.sparse as sp
@@ -8,11 +8,11 @@ from ..api.typing import LabelledExamples, TracesStream, TraceProcessor, Traces,
     LabelledExampleStream
 
 
-async def collect(labelled_examples: LabelledExampleStream) -> LabelledExamples:
+def collect(labelled_examples: LabelledExampleStream) -> LabelledExamples:
     _examples = []
     _labels = []
 
-    async for examples, labels in labelled_examples:
+    for examples, labels in labelled_examples:
         _examples.append(examples)
         _labels.append(labels)
 
@@ -29,23 +29,23 @@ def concat_sparse_aware(_arrays):
         return np.concatenate(_arrays, axis=0)
 
 
-async def collect_examples(example_stream: ExampleStream) -> Examples:
-    _examples = [ex async for ex in example_stream]
+def collect_examples(example_stream: ExampleStream) -> Examples:
+    _examples = [ex for ex in example_stream]
 
     return concat_sparse_aware(_examples)
 
 
-async def drop_labels(labelled_examples: AsyncIterable[LabelledExamples]) -> AsyncGenerator[np.ndarray, None]:
-    async for examples, _ in labelled_examples:
+def drop_labels(labelled_examples: LabelledExampleStream) -> Generator[np.ndarray, None, None]:
+    for examples, _ in labelled_examples:
         yield examples
 
 
-async def process_fenced(extract: TraceProcessor, train_traces: TracesStream,
-                         test_traces: TracesStream) -> Tuple[TracesStream, TracesStream]:
-    train_extracted = [await __await(extract(train)) async for train in train_traces]
-    test_extracted = [await __await(extract(test)) async for test in test_traces]
+def process_fenced(extract: TraceProcessor, train_traces: TracesStream,
+                   test_traces: TracesStream) -> Tuple[TracesStream, TracesStream]:
+    train_extracted = [extract(train) for train in train_traces]
+    test_extracted = [extract(test) for test in test_traces]
 
-    return aiter(train_extracted), aiter(test_extracted)
+    return iter(train_extracted), iter(test_extracted)
 
 
 def is_sparse_matrix(arr) -> bool:

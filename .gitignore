@@ -6,6 +6,7 @@ venv
 
 # Caches
 .mypy_cache
+__pycache__
 
 # cached datasets
 data

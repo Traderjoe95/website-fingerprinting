@@ -1,5 +1,6 @@
 import random
 from datetime import timedelta
+from functools import partial
 from logging import getLogger
 from multiprocessing import Queue
 from multiprocessing.connection import Connection
@@ -10,15 +11,15 @@ import numpy as np
 import numpy.random
 import pandas as pd
 import pendulum
+from asyncstdlib.itertools import tee
 from sklearn.model_selection import cross_val_score
 from sklearn.neighbors import KNeighborsClassifier
-from asyncstdlib.itertools import tee
 
 from ..api import Dataset, AttackDefinition, Defense
 from ..api.pipeline import Datasets, Attacks, Defenses, EvaluationDataset, EvaluationAttack, EvaluationDefense
 from ..api.typing import LabelledExampleStream, HasParams, OffsetOrDelta, Traces
 from ..util.logging import configure_worker, get_queue
-from ..util.multiprocessing import WorkerAdapter, Manager
+from ..util.multiprocessing import WorkerAdapter, Manager, WorkerPool
 from ..util.pipeline import collect, dense
 
 _RNG = np.random.default_rng()
@@ -30,8 +31,8 @@ class BayesErrorEstimator(HasParams):
     def __init__(self, closed_world: bool = True):
         self.closed_world = closed_world
 
-    async def estimate(self, examples: LabelledExampleStream) -> Tuple[float, float]:
-        _examples, _labels = await collect(examples)
+    def estimate(self, examples: LabelledExampleStream) -> Tuple[float, float]:
+        _examples, _labels = collect(examples)
 
         if self.closed_world:
             classes = np.unique(_labels).shape[0]
@@ -45,13 +46,10 @@ class BayesErrorEstimator(HasParams):
 
                 non_monitored = _RNG.choice(non_monitored_indices, size=example_count, replace=False)
 
-                try:
-                    _site_examples = np.concatenate([dense(_examples[_labels == site_id]),
-                                                     dense(_examples[non_monitored])])
-                    _site_labels = np.concatenate([dense(_labels[_labels == site_id]),
-                                                   np.broadcast_to(-1, non_monitored.shape)])
-                except:
-                    raise
+                _site_examples = np.concatenate([dense(_examples[_labels == site_id]),
+                                                 dense(_examples[non_monitored])])
+                _site_labels = np.concatenate([dense(_labels[_labels == site_id]),
+                                               np.broadcast_to(-1, non_monitored.shape)])
 
                 site_error.append(BayesErrorEstimator.__estimate_error(_site_examples, _site_labels))
 
@@ -205,61 +203,61 @@ class ErrorBoundsPipeline:
         if featureset_params is not None:
             feature_set.set_params(**featureset_params)
 
-        async def estimate() -> Tuple[float, float]:
-            estimator = BayesErrorEstimator(closed_world=closed_world)
+        estimator = BayesErrorEstimator(closed_world=closed_world)
 
-            return await estimator.estimate(await feature_set.extract_features_single(data))
-
-        return curio.run(estimate)
+        return estimator.estimate(feature_set.extract_features_single(data))
 
     async def __run_evaluation(self, config: 'ErrorBoundsConfig', site_ids: Optional[Set[int]]) -> pd.DataFrame:
         results: List[Dict[str, Any]] = []
 
-        async with curio.TaskGroup() as g:
-            for dataset_name, dataset in self.__datasets.items():
-                for run in range(config.runs):
-                    sites = random.sample(site_ids or dataset.sites, k=config.websites)
+        with WorkerPool() as pool:
+            async with curio.TaskGroup() as g:
+                for dataset_name, dataset in self.__datasets.items():
+                    for run in range(config.runs):
+                        sites = random.sample(site_ids or dataset.sites, k=config.websites)
 
-                    data = dataset.load(offset=config.offset, examples_per_site=config.examples, sites=sites)
-                    datas = tee(data, n=len(self.__defenses))
+                        data = dataset.load(offset=config.offset, examples_per_site=config.examples, sites=sites)
+                        datas = tee(data, n=len(self.__defenses))
 
-                    tasks: Dict[str, curio.Task] = {}
+                        tasks: Dict[str, curio.Task] = {}
 
-                    for defense_idx, (defense_name, defense) in enumerate(self.__defenses.items()):
-                        data = datas[defense_idx]
+                        for defense_idx, (defense_name, defense) in enumerate(self.__defenses.items()):
+                            data = datas[defense_idx]
 
-                        if defense is not None:
-                            defense_params = config.defense_params(defense_name)
-                            if defense_params is not None:
-                                defense.set_params(**defense_params)
+                            if defense is not None:
+                                defense_params = config.defense_params(defense_name)
+                                if defense_params is not None:
+                                    defense.set_params(**defense_params)
 
-                            data = defense.fit_defend(data)
+                                data = defense.fit_defend(data)
 
-                        data_manager: Manager[Traces] = Manager(data, len(self.__attacks))
+                            data_manager: Manager[Traces] = Manager(data, len(self.__attacks))
 
-                        await g.spawn(data_manager.run)
+                            await g.spawn(data_manager.run)
 
-                        for attack_idx, (attack_name, attack) in enumerate(self.__attacks.items()):
-                            tasks[f'{dataset_name}/{defense_name}/{attack_name}'] = await g.spawn(
-                                curio.run_in_process, ErrorBoundsPipeline._estimate_worker, config.closed_world, attack,
-                                config.feature_set_params(attack_name), data_manager.worker_conns[attack_idx],
-                                get_queue())
+                            for attack_idx, (attack_name, attack) in enumerate(self.__attacks.items()):
+                                tasks[f'{dataset_name}/{defense_name}/{attack_name}'] = await g.spawn(
+                                    pool.submit, partial(ErrorBoundsPipeline._estimate_worker, config.closed_world,
+                                                         attack,
+                                                         config.feature_set_params(attack_name),
+                                                         data_manager.worker_conns[attack_idx],
+                                                         get_queue()))
 
-                    for key in tasks:
-                        error_bound, epsilon = await tasks[key].join()
+                        for key in tasks:
+                            error_bound, epsilon = await tasks[key].join()
 
-                        [ds_name, def_name, att_name] = key.split("/")
+                            [ds_name, def_name, att_name] = key.split("/")
 
-                        results.append({
-                            "dataset": ds_name,
-                            "defense": def_name,
-                            "feature_set": att_name,
-                            "error_bound": error_bound,
-                            "epsilon": epsilon
-                        })
+                            results.append({
+                                "dataset": ds_name,
+                                "defense": def_name,
+                                "feature_set": att_name,
+                                "error_bound": error_bound,
+                                "epsilon": epsilon
+                            })
 
-                        _logger.info(f"Finished error bound estimation '{key}' with a result of {error_bound} "
-                                     f"(epsilon = {epsilon})")
+                            _logger.info(f"Finished error bound estimation '{key}' with a result of {error_bound} "
+                                         f"(epsilon = {epsilon})")
 
         result_df = pd.DataFrame(results)
         result_df['dataset'] = pd.Series(

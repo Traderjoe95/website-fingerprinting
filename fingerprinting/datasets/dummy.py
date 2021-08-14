@@ -1,7 +1,7 @@
 from datetime import timedelta
 from logging import getLogger
 from os.path import join, isdir, abspath, isfile
-from typing import AsyncGenerator, Optional, List, Type
+from typing import Optional, List, Type
 
 import click
 import pandas as pd
@@ -11,7 +11,7 @@ from pendulum import duration, Duration
 from ..api import Dataset
 from ..api.dataset import DatasetConfig
 from ..api.plugin import CliModule
-from ..api.typing import OffsetOrDelta, SiteSelection
+from ..api.typing import OffsetOrDelta, SiteSelection, TracesStream
 from ..util import mkdirs, TraceGenerator
 from ..util.config import CONFIG
 from ..util.dt import to_duration
@@ -88,11 +88,11 @@ class DummyDataset(Dataset):
     def name() -> str:
         return "dummy"
 
-    async def load(self,
-                   offset: OffsetOrDelta = 0,
-                   examples_per_site: Optional[int] = None,
-                   *,
-                   sites: SiteSelection = None) -> AsyncGenerator[pd.DataFrame, None]:
+    def _do_load(self,
+                 offset: OffsetOrDelta = 0,
+                 examples_per_site: Optional[int] = None,
+                 sites: SiteSelection = None) -> TracesStream:
+
         _offset, _count = self._check_offset_and_count(offset, examples_per_site)
         _sites = self._check_sites(sites)
 
@@ -103,13 +103,13 @@ class DummyDataset(Dataset):
                 _requested_sites = range(5)
 
             for s in _requested_sites:
-                yield await DummyDataset.__load_file(join(self.__path, f"site_{s}.traces.csv"), _offset, _count)
+                yield DummyDataset.__load_file(join(self.__path, f"site_{s}.traces.csv"), _offset, _count)
 
     def traces_per_site(self) -> int:
         return 50
 
     @staticmethod
-    async def __load_file(name: str, offset: int, count: int) -> pd.DataFrame:
+    def __load_file(name: str, offset: int, count: int) -> pd.DataFrame:
         df = pd.read_csv(name)
 
         return df[(df["trace_id"] >= offset) & (df["trace_id"] < offset + count)]

@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from ..api import StatelessDefense, Defense
+from ..api.typing import Traces
 
 
 def plugin_path() -> str:
@@ -19,7 +20,7 @@ class DigitizingPadding(StatelessDefense, metaclass=ABCMeta):
     def __init__(self, steps: np.ndarray = np.array([])):
         self._steps = steps
 
-    async def defend(self, traces: pd.DataFrame) -> pd.DataFrame:
+    def defend(self, traces: Traces) -> Traces:
         direction = np.clip(traces["size"].values, -1, 1)
         idxs = np.digitize(np.abs(traces["size"]), self.__steps, right=True)
 

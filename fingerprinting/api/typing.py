@@ -1,5 +1,5 @@
 from datetime import timedelta
-from typing import Tuple, Union, Iterable, AsyncIterable, Callable, Awaitable
+from typing import Tuple, Union, Iterable, Callable
 
 import numpy as np
 import pandas as pd
@@ -56,14 +56,14 @@ OffsetOrDelta = Union[int, timedelta]
 SiteSelection = Union[None, int, range, Iterable[int]]
 
 Traces = pd.DataFrame
-TracesStream = AsyncIterable[pd.DataFrame]
-TraceProcessor = Union[Callable[[pd.DataFrame], pd.DataFrame], Callable[[pd.DataFrame], Awaitable[pd.DataFrame]]]
+TracesStream = Iterable[pd.DataFrame]
+TraceProcessor = Callable[[pd.DataFrame], pd.DataFrame]
 
 Examples = np.ndarray
 Labels = np.ndarray
 LabelledExamples = Tuple[Examples, Labels]
-ExampleStream = AsyncIterable[Examples]
-LabelledExampleStream = AsyncIterable[LabelledExamples]
+ExampleStream = Iterable[Examples]
+LabelledExampleStream = Iterable[LabelledExamples]
 TrainTestSplit = Tuple[LabelledExampleStream, LabelledExampleStream]
 
 Metric = Callable[[np.ndarray, np.ndarray], float]

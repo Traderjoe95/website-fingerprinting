@@ -1,11 +1,61 @@
-from multiprocessing import Pipe
+import multiprocessing.pool
+from multiprocessing import Pipe, Pool
 from multiprocessing.connection import Connection
-from typing import AsyncIterable, TypeVar, Generic, AsyncIterator, Iterator
+from os import cpu_count
+from typing import AsyncIterable, TypeVar, Generic, AsyncIterator, Iterator, Callable, Iterable
 
 import curio
 from asyncstdlib.itertools import aiter, anext, tee
 
+from .config import CONFIG
+
 T = TypeVar("T")
+
+
+class MultiprocessingConfig:
+    def __init__(self, worker_processes: int = (cpu_count() or 1) * 2):
+        if worker_processes < 1:
+            raise ValueError("multiprocessing.worker_processes must be >= 1")
+        self.__workers = worker_processes
+
+    @property
+    def workers(self):
+        return self.__workers
+
+
+_CONFIG = CONFIG.get_obj("multiprocessing").as_obj(MultiprocessingConfig)
+
+
+def create_pool(processes: int = _CONFIG.workers) -> multiprocessing.pool.Pool:
+    return Pool(processes=processes if processes >= 1 else _CONFIG.workers)
+
+
+class WorkerPool:
+    def __init__(self, processes: int = _CONFIG.workers):
+        self.__pool = create_pool(processes) if processes > 1 else None
+
+    async def submit(self, task: Callable[[], T]) -> T:
+        if self.__pool is not None:
+            e = curio.UniversalEvent()
+            fut = self.__pool.apply_async(task, callback=lambda _: e.set(), error_callback=self.__on_err)
+            await e.wait()
+
+            return fut.get()
+        else:
+            return task()
+
+    def __on_err(self, err):
+        raise err
+
+    def __enter__(self) -> 'WorkerPool':
+        if self.__pool is not None:
+            self.__pool.__enter__()
+
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.__pool is not None:
+            self.__pool.__exit__(exc_type, exc_val, exc_tb)
 
 
 class ManagerAdapter(Generic[T]):
@@ -79,12 +129,13 @@ class WorkerAdapter(Generic[T], AsyncIterator[T], Iterator[T]):
             return received
 
     def __request(self, n: int):
+        # print(self.__conn.fileno(), self.__conn.closed, self.__conn.readable, self.__conn.writable)
         self.__conn.send(n)
         self.__requested += n
 
 
 class Manager(Generic[T]):
-    def __init__(self, objects: AsyncIterable[T], n: int):
+    def __init__(self, objects: Iterable[T], n: int):
         self.__cloned_iterable = tee(objects, n)
         self.n = n
 

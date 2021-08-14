@@ -8,7 +8,7 @@ from multiprocessing import Queue
 from os import remove, getcwd, chdir, listdir
 from os.path import join, isfile, isdir, sep, split
 from time import perf_counter
-from typing import Iterable, Optional, AsyncGenerator, List, Type
+from typing import Iterable, Optional, List, Type, Dict
 
 import curio
 import numpy as np
@@ -21,8 +21,8 @@ from pendulum import duration
 from ..api import Dataset
 from ..api.dataset import DatasetConfig
 from ..api.plugin import CliModule
-from ..api.typing import OffsetOrDelta, SiteSelection
-from ..util.config import CONFIG, ConfigList, ConfigObject
+from ..api.typing import OffsetOrDelta, SiteSelection, TracesStream
+from ..util.config import CONFIG, ConfigObject, ConfigValue
 from ..util.dt import to_duration
 from ..util.fs import extract_tarball, mkdirs, remove_recursive
 from ..util.http import download_to
@@ -59,13 +59,13 @@ class ExtractionConfig:
 class LiberatoreDatasetConfig(DatasetConfig):
     def __init__(self,
                  url: str = "http://skulddata.cs.umass.edu/traces/network",
-                 files: Optional[ConfigList] = None,
-                 extraction: Optional[ConfigObject] = None,
+                 files: Optional[List[str]] = None,
+                 extraction: Optional[Dict[str, ConfigValue]] = None,
                  **kwargs):
         super(LiberatoreDatasetConfig, self).__init__(default_name='liberatore', **kwargs)
 
         self.__url = url
-        _files = files.as_list() if files is not None else [
+        _files = files or [
             "pcap-logs-0.tar.bz2", "pcap-logs-1.tar.bz2", "pcap-logs-2.tar.bz2", "pcap-logs-3.tar.bz2"
         ]
 
@@ -74,7 +74,7 @@ class LiberatoreDatasetConfig(DatasetConfig):
 
         self.__files: Iterable[str] = list(map(str, _files))
 
-        self.__extract = (extraction or ConfigObject({})).as_obj(ExtractionConfig)
+        self.__extract = ConfigObject(extraction or {}).as_obj(ExtractionConfig)
 
     @property
     def url(self) -> str:
@@ -113,11 +113,10 @@ class LiberatoreDataset(Dataset):
     def name() -> str:
         return "liberatore"
 
-    async def load(self,
-                   offset: OffsetOrDelta = 0,
-                   examples_per_site: Optional[int] = None,
-                   *,
-                   sites: SiteSelection = None) -> AsyncGenerator[pd.DataFrame, None]:
+    def _do_load(self,
+                 offset: OffsetOrDelta = 0,
+                 examples_per_site: Optional[int] = None,
+                 sites: SiteSelection = None) -> TracesStream:
         _offset, _count = self._check_offset_and_count(offset, examples_per_site)
         _sites = self._check_sites(sites)
 
@@ -262,7 +261,8 @@ class LiberatoreDataset(Dataset):
                                     worker=True,
                                     queue=get_queue(),
                                     log_level=getLogger().level), chunk_id * sites_per_chunk,
-                            (chunk_id + 1) * sites_per_chunk, chunk_id, dataset_base)
+                                                                  (chunk_id + 1) * sites_per_chunk, chunk_id,
+                            dataset_base)
             elif _CONFIG.extract.max_cpu_cores == 1:
                 for chunk_id in range(chunks):
                     LiberatoreDataset._translate_site_trace_chunk(chunk_id * sites_per_chunk,
@@ -400,33 +400,25 @@ class LiberatoreDataset(Dataset):
             _pcap = pcap.Reader(f)
 
             ref_time = None
-            local_ip = None
-            local_port = None
 
             data = []
-            idx = 0
 
             for ts, buf in _pcap:
                 eth = ethernet.Ethernet(buf)
                 ip = eth.data
                 tcp = ip.data
 
-                src, sport = (ip.src, tcp.sport)
-
                 if ref_time is None:
                     ref_time = ts
-                    local_ip, local_port = (src, sport)
 
-                direction = 1 if src != local_ip or sport != local_port else -1
+                direction = 1 if tcp.sport == 22 else -1
 
                 data.append({"time": (ts - ref_time) * 1000, "size": direction * ip.len})
-
-                idx += 1
 
             if len(data) == 0:
                 data.append({"time": 0, "size": 0})
 
-        return pd.DataFrame(data, columns=["time", "size"])
+            return pd.DataFrame(data, columns=["time", "size"])
 
     @staticmethod
     def __uncompressed_store(chunk_id: int) -> str:
@@ -446,7 +438,8 @@ class LiberatoreDataset(Dataset):
         before = perf_counter()
 
         proc = subprocess.Popen(
-            f'ptrepack --chunkshape=auto --propindexes --complib="blosc:zstd" --complevel=9 "{in_store}" "{out_store}"',
+            ['ptrepack', '--chunkshape=auto', '--propindexes', '--complib=blosc:zstd', '--complevel=9',
+             in_store, out_store],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE)
 

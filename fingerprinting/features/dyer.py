@@ -10,7 +10,7 @@ from ..util.pipeline import process_fenced
 
 
 class Time(StatelessFeatureSet):
-    async def _extract(self, traces: pd.DataFrame) -> LabelledExamples:
+    def _extract(self, traces: pd.DataFrame) -> LabelledExamples:
         time = traces[["site_id", "trace_id", "time"]].groupby(["site_id", "trace_id"], as_index=False).agg("max")
         del time["trace_id"]
 
@@ -23,7 +23,7 @@ class Time(StatelessFeatureSet):
 
 
 class Bandwidth(StatelessFeatureSet):
-    async def _extract(self, traces: pd.DataFrame) -> LabelledExamples:
+    def _extract(self, traces: pd.DataFrame) -> LabelledExamples:
         down = traces[traces["size"] >= 0]
         up = traces[traces["size"] <= 0]
 
@@ -48,11 +48,11 @@ class VariableNGram(FeatureSet):
     def __init__(self):
         self.__attributes: Set[str] = set()
 
-    async def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
-        train, test = await process_fenced(self.__extract_vng, train_traces, test_traces)
+    def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
+        train, test = process_fenced(self.__extract_vng, train_traces, test_traces)
         return fill_missing(train, self.__attributes), fill_missing(test, self.__attributes)
 
-    async def __extract_vng(self, traces: Traces) -> Traces:
+    def __extract_vng(self, traces: Traces) -> Traces:
         bursts = traces.groupby(["site_id", "trace_id"]).apply(get_bursts)
 
         direction = np.clip(bursts["burst_size"], -1, 1)

@@ -132,11 +132,11 @@ class Markers(FeatureSet):
         self.__config = MarkerConfig(**params)
         self.__attributes: Set[str] = {"UNQ+", "UNQ-", "PCT+", "PCT-", "N+", "N-"}
 
-    async def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
-        train, test = await process_fenced(self.__extract_markers, train_traces, test_traces)
+    def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
+        train, test = process_fenced(self.__extract_markers, train_traces, test_traces)
         return fill_missing(train, self.__attributes), fill_missing(test, self.__attributes)
 
-    async def __extract_markers(self, traces: Traces) -> Traces:
+    def __extract_markers(self, traces: Traces) -> Traces:
         bursts = traces.groupby(["site_id", "trace_id"]).apply(get_bursts)
 
         direction = np.clip(bursts["burst_size"], -1, 1)

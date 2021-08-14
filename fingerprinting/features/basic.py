@@ -23,11 +23,11 @@ class SimpleFeatureSet(FeatureSet, metaclass=ABCMeta):
     def _dtype(self):
         ...
 
-    async def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
-        train, test = await process_fenced(self.__extract_data, train_traces, test_traces)
+    def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
+        train, test = process_fenced(self.__extract_data, train_traces, test_traces)
         return fill_missing(train, self.__attributes), fill_missing(test, self.__attributes)
 
-    async def __extract_data(self, traces: Traces) -> Traces:
+    def __extract_data(self, traces: Traces) -> Traces:
         traces["unit"] = 1
 
         pivot = pd.pivot_table(traces,

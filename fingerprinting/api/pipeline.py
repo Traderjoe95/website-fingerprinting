@@ -2,16 +2,15 @@ import random
 from abc import ABCMeta, abstractmethod
 from datetime import timedelta
 from functools import partial
+from itertools import tee
 from logging import getLogger
 from multiprocessing import Queue
 from multiprocessing.connection import Connection
-from typing import AsyncIterable, AsyncGenerator, Tuple, Optional, Iterable, Union, Set, TypeVar, Generic, Dict, Any, \
-    List, Type
+from typing import Tuple, Optional, Iterable, Union, Set, TypeVar, Generic, Dict, Any, List, Type
 
 import curio
 import numpy as np
 import pandas as pd
-from asyncstdlib import tee, iter as aiter
 from sklearn.metrics import accuracy_score
 
 from .dataset import DatasetConfig
@@ -19,7 +18,7 @@ from .evaluation import EvaluationConfig
 from .typing import OffsetOrDelta, SiteSelection, LabelledExamples, Transformer, TrainTestSplit, TracesStream, \
     HasParams, Metric, Classifier, StreamableClassifier, ExampleStream, LabelledExampleStream, Traces
 from ..util.logging import configure_worker, get_queue
-from ..util.multiprocessing import WorkerAdapter, Manager
+from ..util.multiprocessing import WorkerAdapter, Manager, WorkerPool
 from ..util.pipeline import drop_labels, collect, collect_examples, concat_sparse_aware
 from ..util.range import intersect as range_intersect
 
@@ -30,12 +29,12 @@ _logger = getLogger(__name__)
 
 class Fitted(Generic[T], metaclass=ABCMeta):
     @abstractmethod
-    async def _do_fit(self, stream: AsyncIterable[T]) -> 'Fitted[T]':
+    def _do_fit(self, stream: Iterable[T]) -> 'Fitted[T]':
         ...
 
-    async def fit(self, stream: AsyncIterable[T]) -> 'Fitted[T]':
+    def fit(self, stream: Iterable[T]) -> 'Fitted[T]':
         self.reset()
-        return await self._do_fit(stream)
+        return self._do_fit(stream)
 
     @abstractmethod
     def reset(self):
@@ -69,24 +68,22 @@ class Dataset(StaticNamed, metaclass=ABCMeta):
         self.__traces_per_site = traces_per_site
         self.__config = config
 
-    async def load_all(self, *, sites: SiteSelection = None) -> AsyncGenerator[pd.DataFrame, None]:
+    def load_all(self, *, sites: SiteSelection = None) -> TracesStream:
         """
         Loads all traces from the dataset.
         :param sites: The IDs of the websites to load traces for. If omitted, traces will be loaded for all websites.
         :return: An async iterable, see Dataset.load for details
         """
-        async for df in self.load(sites=sites):
-            yield df
+        return self.load(sites=sites)
 
     def load_train_test(
-            self,
-            *,
-            train_examples_per_site: int = 1,
-            train_offset: OffsetOrDelta = 0,
-            test_examples_per_site: int = 1,
-            train_test_delta: OffsetOrDelta = 0,
-            sites: SiteSelection = None
-    ) -> Tuple[AsyncGenerator[pd.DataFrame, None], AsyncGenerator[pd.DataFrame, None]]:
+        self, *,
+        train_examples_per_site: int = 1,
+        train_offset: OffsetOrDelta = 0,
+        test_examples_per_site: int = 1,
+        train_test_delta: OffsetOrDelta = 0,
+        sites: SiteSelection = None
+    ) -> Tuple[TracesStream, TracesStream]:
         """
         Loads disjoint training and test data from the data set.
 
@@ -116,17 +113,51 @@ class Dataset(StaticNamed, metaclass=ABCMeta):
         else:
             test_offset += train_test_delta
 
-        train = self.load(offset=train_offset, examples_per_site=train_examples_per_site,sites=sites)
+        train = self.load(offset=train_offset, examples_per_site=train_examples_per_site, sites=sites)
         test = self.load(offset=test_offset, examples_per_site=test_examples_per_site, sites=sites)
 
         return train, test
 
+    def load(self, *,
+             offset: OffsetOrDelta = 0,
+             examples_per_site: Optional[int] = None,
+             sites: SiteSelection = None) -> TracesStream:
+        """
+        Loads data from the dataset.
+
+        This method loads data beginning at or after the specified offset and produces exactly the requested number
+        of examples per site.
+
+        This method is expected to throw if the offset is greater than the maximum offset in the dataset or if there
+        aren't enough examples per website (after the offset) to satisfy the requested count.
+
+        :param offset: the offset into the dataset.
+            Can be a non-negative integer of a timedelta, taken from the time of the first trace collection.
+
+            If a timedelta is used, the first traces will have been collected after or at that time.
+        :param examples_per_site: the number of examples to return per site
+        :param sites: The IDs of the websites to load traces for. If omitted, traces will be loaded for all websites.
+
+        :return: An async iterable of data frames. There is no assumption made about how the chunks of data are
+            separated, i.e. there can be a data frame for every trace, a data frame for every site or any other
+            subdivision of data.
+
+            Each data frame contains packet observations within the rows and MUST contain the following columns:
+             - site_id: The ID of the website the trace belongs to. Must be a zero-based integer.
+             - trace_id: The trace ID, each trace within the same site must get its unique ID
+             - collection_time: The time at which the trace collection started, must be the same for all packets
+                                within the same trace
+             - time: The timing of the packet within the trace. The first packet MUST have this set to 0
+             - size: The size of the packet, including the direction. negative means "upstream", positive means
+                     "downstream"
+        """
+        for traces in self._do_load(offset, examples_per_site, sites):
+            yield self.__apply_filters(traces)
+
     @abstractmethod
-    async def load(self,
-                   *,
-                   offset: OffsetOrDelta = 0,
-                   examples_per_site: Optional[int] = None,
-                   sites: SiteSelection = None) -> AsyncGenerator[pd.DataFrame, None]:
+    def _do_load(self, offset: OffsetOrDelta = 0,
+                 examples_per_site: Optional[int] = None,
+                 sites: SiteSelection = None) -> TracesStream:
         """
         Loads data from the dataset.
 
@@ -281,6 +312,12 @@ class Dataset(StaticNamed, metaclass=ABCMeta):
 
         return False
 
+    def __apply_filters(self, traces: pd.DataFrame) -> pd.DataFrame:
+        for f in self.__config.filters:
+            traces = f(traces)
+
+        return traces
+
 
 class Defense(StaticNamed, Fitted[pd.DataFrame], HasParams, metaclass=ABCMeta):
     """
@@ -291,11 +328,11 @@ class Defense(StaticNamed, Fitted[pd.DataFrame], HasParams, metaclass=ABCMeta):
     """
 
     # noinspection PyTypeChecker,Mypy
-    async def fit(self, stream: AsyncIterable[T]) -> 'Defense':
-        return await super().fit(stream)
+    def fit(self, stream: TracesStream) -> 'Defense':
+        return super().fit(stream)
 
     @abstractmethod
-    async def _do_fit(self, traces_stream: TracesStream) -> 'Defense':
+    def _do_fit(self, traces_stream: TracesStream) -> 'Defense':
         """
         Fits the defense to the given input traces.
 
@@ -307,7 +344,7 @@ class Defense(StaticNamed, Fitted[pd.DataFrame], HasParams, metaclass=ABCMeta):
         ...
 
     @abstractmethod
-    async def defend(self, traces: pd.DataFrame) -> pd.DataFrame:
+    def defend(self, traces: pd.DataFrame) -> pd.DataFrame:
         """
         Defends traces in the input data frame and returns them as another data frame.
 
@@ -320,7 +357,7 @@ class Defense(StaticNamed, Fitted[pd.DataFrame], HasParams, metaclass=ABCMeta):
          """
         ...
 
-    async def defend_all(self, traces_stream: TracesStream) -> AsyncGenerator[pd.DataFrame, None]:
+    def defend_all(self, traces_stream: TracesStream) -> Iterable[pd.DataFrame]:
         """
         Defends traces in the input data frames and returns them as other data frames
 
@@ -331,10 +368,10 @@ class Defense(StaticNamed, Fitted[pd.DataFrame], HasParams, metaclass=ABCMeta):
 
             These data frames are expected to be structured as explained on the Dataset.load method.
         """
-        async for traces in traces_stream:
-            yield await self.defend(traces)
+        for traces in traces_stream:
+            yield self.defend(traces)
 
-    async def fit_defend(self, traces_stream: TracesStream) -> AsyncGenerator[pd.DataFrame, None]:
+    def fit_defend(self, traces_stream: TracesStream) -> Iterable[pd.DataFrame]:
         """
         Fits the defense to the input traces and defends them in one step.
 
@@ -345,9 +382,9 @@ class Defense(StaticNamed, Fitted[pd.DataFrame], HasParams, metaclass=ABCMeta):
 
             These data frames are expected to be structured as explained on the Dataset.load method.
         """
-        (left, right) = tee(traces_stream, n=2)
+        (left, right) = tee(traces_stream, 2)
 
-        async for defended in (await self.fit(left)).defend_all(right):
+        for defended in self.fit(left).defend_all(right):
             yield defended
 
 
@@ -357,17 +394,18 @@ class FeatureSet(HasParams, metaclass=ABCMeta):
 
     It takes data loaded from a `fingerprinting.api.Dataset` and extracts features for a subsequent ML algorithm.
     """
-    async def extract_features(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
-        self.reset()
-        return await self._do_extract(train_traces, test_traces)
 
-    async def extract_features_single(self, traces: TracesStream) -> LabelledExampleStream:
-        examples, _ = await self.extract_features(traces, aiter([]))
+    def extract_features(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
+        self.reset()
+        return self._do_extract(train_traces, test_traces)
+
+    def extract_features_single(self, traces: TracesStream) -> LabelledExampleStream:
+        examples, _ = self.extract_features(traces, iter([]))
 
         return examples
 
     @abstractmethod
-    async def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
+    def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
         ...
 
     def __add__(self, other: 'FeatureSet') -> 'FeatureSet':
@@ -394,20 +432,20 @@ class AttackInstance:
         self.__first = True
         self.__fitted = False
 
-    async def extract_features(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
-        return await self.__fts.extract_features(train_traces, test_traces)
+    def extract_features(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
+        return self.__fts.extract_features(train_traces, test_traces)
 
     # noinspection PyPep8Naming
-    async def fit(self, train: AsyncIterable[LabelledExamples]):
+    def fit(self, train: Iterable[LabelledExamples]):
         if self.__classes is not None and isinstance(self.__clf, StreamableClassifier):
-            async for X, y in train:
+            for X, y in train:
                 if self.__first:
                     self.__clf.partial_fit(X, y, classes=self.__classes)
                     self.__first = False
                 else:
                     self.__clf.partial_fit(X, y)
         else:
-            X, y = await collect(train)
+            X, y = collect(train)
             self.__clf.fit(X, y)
 
         self.__fitted = True
@@ -418,14 +456,14 @@ class AttackInstance:
         return self.__clf.predict(X)
 
     # noinspection PyPep8Naming
-    async def predict_stream(self, X_stream: ExampleStream, *, collect_before_predict: bool = False) -> np.ndarray:
+    def predict_stream(self, X_stream: ExampleStream, *, collect_before_predict: bool = False) -> np.ndarray:
         self._ensure_fitted()
 
         if collect_before_predict:
-            X = await collect_examples(X_stream)
+            X = collect_examples(X_stream)
             return self.predict(X)
         else:
-            y_ = [self.predict(X) async for X in X_stream]
+            y_ = [self.predict(X) for X in X_stream]
             return concat_sparse_aware(y_)
 
     # noinspection PyPep8Naming
@@ -434,21 +472,21 @@ class AttackInstance:
         return metric(y, self.__clf.predict(X))
 
     # noinspection PyPep8Naming
-    async def score_stream(self,
-                           stream: LabelledExampleStream,
-                           *,
-                           collect_before_predict: bool = False,
-                           metric: Metric = accuracy_score) -> float:
+    def score_stream(self,
+                     stream: LabelledExampleStream,
+                     *,
+                     collect_before_predict: bool = False,
+                     metric: Metric = accuracy_score) -> float:
         self._ensure_fitted()
 
         if collect_before_predict:
-            X, y = await collect(stream)
+            X, y = collect(stream)
             return self.score(X, y, metric=metric)
         else:
             example_count = 0
             score_ = 0.
 
-            async for X, y in stream:
+            for X, y in stream:
                 chunk_score = self.score(X, y, metric=metric)
                 score_ += chunk_score * X.shape[0]
                 example_count += X.shape[0]
@@ -456,27 +494,27 @@ class AttackInstance:
             return score_ / example_count
 
     # noinspection PyPep8Naming
-    async def fit_predict(self,
-                          train_traces: TracesStream,
-                          test_traces: TracesStream,
-                          *,
-                          collect_before_predict: bool = False) -> np.ndarray:
-        train, test = await self.extract_features(train_traces, test_traces)
-        await self.fit(train)
+    def fit_predict(self,
+                    train_traces: TracesStream,
+                    test_traces: TracesStream,
+                    *,
+                    collect_before_predict: bool = False) -> np.ndarray:
+        train, test = self.extract_features(train_traces, test_traces)
+        self.fit(train)
 
-        return await self.predict_stream(drop_labels(test), collect_before_predict=collect_before_predict)
+        return self.predict_stream(drop_labels(test), collect_before_predict=collect_before_predict)
 
     # noinspection PyPep8Naming
-    async def fit_score(self,
-                        train_traces: TracesStream,
-                        test_traces: TracesStream,
-                        *,
-                        collect_before_predict: bool = False,
-                        metric: Metric = accuracy_score) -> float:
-        train, test = await self.extract_features(train_traces, test_traces)
-        await self.fit(train)
+    def fit_score(self,
+                  train_traces: TracesStream,
+                  test_traces: TracesStream,
+                  *,
+                  collect_before_predict: bool = False,
+                  metric: Metric = accuracy_score) -> float:
+        train, test = self.extract_features(train_traces, test_traces)
+        self.fit(train)
 
-        return await self.score_stream(test, collect_before_predict=collect_before_predict, metric=metric)
+        return self.score_stream(test, collect_before_predict=collect_before_predict, metric=metric)
 
     def _ensure_fitted(self):
         if not self.__fitted:
@@ -516,15 +554,13 @@ class AttackDefinition(StaticNamed, metaclass=ABCMeta):
         ...
 
 
-Dataset_ = Union[Type[Dataset], Dataset]
-EvaluationDataset = Union[Dataset_, Tuple[str, Dataset_]]
-Datasets = Union[EvaluationDataset, List[EvaluationDataset], Dict[str, Dataset_]]
+EvaluationDataset = Union[Type[Dataset], Tuple[str, Type[Dataset]]]
+Datasets = Union[EvaluationDataset, List[EvaluationDataset], Dict[str, Type[Dataset]]]
 
-AttackDefinition_ = Union[Type[AttackDefinition], AttackDefinition]
-EvaluationAttack = Union[AttackDefinition_, Tuple[str, AttackDefinition_]]
-Attacks = Union[EvaluationAttack, List[EvaluationAttack], Dict[str, AttackDefinition_]]
+EvaluationAttack = Union[Type[AttackDefinition], Tuple[str, Type[AttackDefinition]]]
+Attacks = Union[EvaluationAttack, List[EvaluationAttack], Dict[str, Type[AttackDefinition]]]
 
-Defense_ = Optional[Union[Defense, Type[Defense]]]
+Defense_ = Optional[Type[Defense]]
 EvaluationDefense = Union[Defense_, Tuple[str, Defense_]]
 Defenses = Union[None, EvaluationDefense, List[EvaluationDefense], Dict[str, Defense_]]
 
@@ -536,8 +572,8 @@ class EvaluationPipeline:
         if (isinstance(attacks, list) or isinstance(attacks, dict)) and len(attacks) == 0:
             raise ValueError("At least one attack is required for the evaluation pipeline")
 
-        self.__datasets: Dict[str, Dataset] = {}
-        if isinstance(datasets, Dataset) or isinstance(datasets, type) or isinstance(datasets, tuple):
+        self.__datasets: Dict[str, Type[Dataset]] = {}
+        if isinstance(datasets, type) or isinstance(datasets, tuple):
             self.add_dataset(datasets)
         elif isinstance(datasets, list):
             for ds in datasets:
@@ -547,8 +583,8 @@ class EvaluationPipeline:
                 ds = datasets[name]
                 self.add_dataset((name, ds))
 
-        self.__attacks: Dict[str, AttackDefinition] = {}
-        if isinstance(attacks, AttackDefinition) or isinstance(attacks, type) or isinstance(attacks, tuple):
+        self.__attacks: Dict[str, Type[AttackDefinition]] = {}
+        if isinstance(attacks, type) or isinstance(attacks, tuple):
             self.add_attack(attacks)
         elif isinstance(attacks, list):
             for att in attacks:
@@ -558,8 +594,8 @@ class EvaluationPipeline:
                 att = attacks[name]
                 self.add_attack((name, att))
 
-        self.__defenses: Dict[str, Optional[Defense]] = {}
-        if isinstance(defenses, Defense) or isinstance(defenses, type) or isinstance(defenses, tuple):
+        self.__defenses: Dict[str, Optional[Type[Defense]]] = {}
+        if isinstance(defenses, type) or isinstance(defenses, tuple):
             self.add_defense(defenses)
         elif isinstance(defenses, list):
             for defense in defenses:
@@ -575,56 +611,36 @@ class EvaluationPipeline:
             self.__defenses["none"] = None
 
     def add_dataset(self, dataset: EvaluationDataset) -> 'EvaluationPipeline':
-        if isinstance(dataset, Dataset):
+        if isinstance(dataset, type):
             self.__datasets[dataset.name()] = dataset
-        elif isinstance(dataset, type):
-            return self.add_dataset(dataset())
         else:
             name, dataset = dataset
-
-            if isinstance(dataset, Dataset):
-                self.__datasets[name] = dataset
-            else:
-                return self.add_dataset((name, dataset()))
+            self.__datasets[name] = dataset
 
         return self
 
     def add_attack(self, attack: EvaluationAttack) -> 'EvaluationPipeline':
-        if isinstance(attack, AttackDefinition):
+        if isinstance(attack, type):
             self.__attacks[attack.name()] = attack
-        elif isinstance(attack, type):
-            return self.add_attack(attack())
         else:
             name, attack = attack
-
-            if isinstance(attack, AttackDefinition):
-                self.__attacks[name] = attack
-            else:
-                return self.add_attack((name, attack()))
+            self.__attacks[name] = attack
 
         return self
 
     def add_defense(self, defense: EvaluationDefense) -> 'EvaluationPipeline':
-        if isinstance(defense, Defense):
+        if isinstance(defense, type):
             self.__defenses[defense.name()] = defense
-        elif isinstance(defense, type):
-            return self.add_defense(defense())
         elif defense is not None:
             name, defense = defense
-
-            if defense is not None and isinstance(defense, Defense):
-                self.__defenses[name] = defense
-            elif defense is not None:
-                return self.add_defense((name, defense()))
-            else:
-                self.__defenses[name] = None
+            self.__defenses[name] = defense
         else:
             self.__defenses["none"] = None
 
         return self
 
     @staticmethod
-    def _score_worker(attack_def: AttackDefinition,
+    def _score_worker(_attack_def: Type[AttackDefinition],
                       classes: Optional[np.ndarray],
                       featureset_params: Optional[Dict[str, Any]],
                       classifier_params: Optional[Dict[str, Any]],
@@ -641,77 +657,83 @@ class EvaluationPipeline:
         train: WorkerAdapter[Traces] = WorkerAdapter(train_conn)
         test: WorkerAdapter[Traces] = WorkerAdapter(test_conn)
 
-        attack = attack_def.instantiate(classes=classes,
-                                        featureset_params=featureset_params,
-                                        classifier_params=classifier_params)
-        fit_score = partial(attack.fit_score, collect_before_predict=concat, metric=metric)
+        attack = _attack_def().instantiate(classes=classes,
+                                           featureset_params=featureset_params,
+                                           classifier_params=classifier_params)
 
-        return curio.run(fit_score, train, test)
+        return attack.fit_score(train, test, collect_before_predict=concat, metric=metric)
 
     async def __run_evaluation(self, config: EvaluationConfig, site_ids: Optional[Set[int]]) -> pd.DataFrame:
         results: List[Dict[str, Any]] = []
 
-        async with curio.TaskGroup() as g:
-            for dataset_name, dataset in self.__datasets.items():
-                for params in config:
-                    runner = partial(self._score_worker, metric=params.metric)
+        with WorkerPool() as pool:
+            async with curio.TaskGroup() as g:
+                for dataset_name, _dataset in self.__datasets.items():
+                    dataset = _dataset()
+                    for params in config.runs(dataset):
+                        runner = partial(self._score_worker, metric=params.metric)
 
-                    for run in range(params.runs):
-                        sites = random.sample(site_ids or dataset.sites, k=params.websites)
-                        classes = dataset.labels(sites).values
+                        for run in range(params.runs):
+                            sites = random.sample(site_ids or dataset.sites, k=params.websites)
+                            classes = dataset.labels(sites).values
 
-                        train, test = dataset.load_train_test(train_examples_per_site=params.train_examples,
-                                                              test_examples_per_site=params.test_examples,
-                                                              train_offset=params.train_offset,
-                                                              train_test_delta=params.train_test_delta,
-                                                              sites=sites)
-                        trains = tee(train, n=len(self.__defenses))
-                        tests = tee(test, n=len(self.__defenses))
+                            train, test = dataset.load_train_test(train_examples_per_site=params.train_examples,
+                                                                  test_examples_per_site=params.test_examples,
+                                                                  train_offset=params.train_offset,
+                                                                  train_test_delta=params.train_test_delta,
+                                                                  sites=sites)
+                            trains = tee(train, len(self.__defenses))
+                            tests = tee(test, len(self.__defenses))
 
-                        tasks: Dict[str, curio.Task] = {}
+                            tasks: Dict[str, curio.Task] = {}
 
-                        for defense_idx, (defense_name, defense) in enumerate(self.__defenses.items()):
-                            train = trains[defense_idx]
-                            test = tests[defense_idx]
+                            for defense_idx, (defense_name, _defense) in enumerate(self.__defenses.items()):
+                                train = (t.copy(deep=True) for t in trains[defense_idx])
+                                test = (t.copy(deep=True) for t in tests[defense_idx])
 
-                            if defense is not None:
-                                defense_params = params.defense_params(defense_name)
-                                if defense_params is not None:
-                                    defense.set_params(**defense_params)
+                                if _defense is not None:
+                                    defense = _defense()
 
-                                train = defense.fit_defend(train)
-                                test = defense.defend_all(test)
+                                    defense_params = params.defense_params(defense_name)
+                                    if defense_params is not None:
+                                        defense.set_params(**defense_params)
 
-                            train_manager: Manager[Traces] = Manager(train, len(self.__attacks))
-                            test_manager: Manager[Traces] = Manager(test, len(self.__attacks))
+                                    train = (t.copy(deep=True) for t in defense.fit_defend(train))
+                                    test = (t.copy(deep=True) for t in defense.defend_all(test))
 
-                            await g.spawn(train_manager.run)
-                            await g.spawn(test_manager.run)
+                                train_manager: Manager[Traces] = Manager(train, len(self.__attacks))
+                                test_manager: Manager[Traces] = Manager(test, len(self.__attacks))
 
-                            for attack_idx, (attack_name, attack) in enumerate(self.__attacks.items()):
-                                tasks[f'{dataset_name}/{defense_name}/{attack_name}/{params.websites}'] = await g.spawn(
-                                    curio.run_in_process, runner, attack, classes,
-                                    params.feature_set_params(attack_name), params.classifier_params(attack_name),
-                                    (train_manager.worker_conns[attack_idx], test_manager.worker_conns[attack_idx]),
-                                    get_queue())
+                                await g.spawn(train_manager.run)
+                                await g.spawn(test_manager.run)
 
-                        for key in tasks:
-                            score = await tasks[key].join()
+                                for attack_idx, (attack_name, attack) in enumerate(self.__attacks.items()):
+                                    tasks[f'{dataset_name}/{defense_name}/{attack_name}/{params.websites}'] = \
+                                        await g.spawn(
+                                            pool.submit, partial(runner, attack, classes,
+                                                                 params.feature_set_params(attack_name),
+                                                                 params.classifier_params(attack_name),
+                                                                 (train_manager.worker_conns[attack_idx],
+                                                                  test_manager.worker_conns[attack_idx]),
+                                                                 get_queue()))
 
-                            [ds_name, def_name, att_name, s] = key.split("/")
+                            for key in tasks:
+                                score = await tasks[key].join()
 
-                            results.append({
-                                "dataset": ds_name,
-                                "defense": def_name,
-                                "attack": att_name,
-                                "sites": int(s),
-                                "train_offset": params.train_offset,
-                                "train_test_delta": params.train_test_delta,
-                                "train_examples": params.train_examples,
-                                "test_examples": params.test_examples,
-                                "score": score
-                            })
-                            _logger.info(f"Finished evaluation '{key}' with a score of {score}")
+                                [ds_name, def_name, att_name, s] = key.split("/")
+
+                                results.append({
+                                    "dataset": ds_name,
+                                    "defense": def_name,
+                                    "attack": att_name,
+                                    "sites": int(s),
+                                    "train_offset": params.train_offset,
+                                    "train_test_delta": params.train_test_delta,
+                                    "train_examples": params.train_examples,
+                                    "test_examples": params.test_examples,
+                                    "score": score
+                                })
+                                _logger.info(f"Finished evaluation '{key}' with a score of {score}")
 
         result_df = pd.DataFrame(results)
         result_df['dataset'] = pd.Series(

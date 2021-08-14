@@ -31,7 +31,7 @@ def weka_precision(sorted_x):
     return np.maximum(delta_sum / (distinct + 1e-23), 0.01)
 
 
-def weka(x, weights=None):
+def weka(x, precision=None, weights=None):
     sorted_x = np.sort(x, axis=0)
 
     if weights is None:
@@ -40,17 +40,17 @@ def weka(x, weights=None):
 
     x_range = sorted_x[-1, :] - sorted_x[0, :]
 
-    precision = weka_precision(sorted_x)
+    precision = precision if precision is not None else weka_precision(sorted_x)
     h = np.maximum(x_range / np.sqrt(n), precision / 6)
 
     return h
 
 
-def silverman(x, weights=None):
+def silverman(x, weights=None, **kwargs):
     return __iqr_method(x, weights, 0.9)
 
 
-def scott(x, weights=None):
+def scott(x, weights=None, **kwargs):
     return __iqr_method(x, weights, 1.059)
 
 
@@ -68,7 +68,7 @@ def __iqr_method(x, weights, factor):
     return np.where(h == 0., ZERO_VAR_BANDWIDTH, h)
 
 
-def norm(x, weights=None):
+def norm(x, weights=None, **kwargs):
     """
     Bandwidth estimate assuming f is normal. See paragraph 2.4.2 of
     Bowman and Azzalini[1]_ for details.
@@ -90,7 +90,7 @@ def norm(x, weights=None):
     return sd * (4 / (3 * n)) ** (1 / 5.0)
 
 
-def sheather_jones(x, weights=None):
+def sheather_jones(x, weights=None, **kwargs):
     """
     Sheather-Jones bandwidth estimator [1]_.
     References

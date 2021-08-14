@@ -1,5 +1,5 @@
 from abc import ABCMeta, abstractmethod
-from typing import AsyncGenerator
+from typing import Iterable
 
 import pandas as pd
 
@@ -13,11 +13,11 @@ class StreamableDefense(Defense, metaclass=ABCMeta):
     """
 
     # noinspection PyTypeChecker,Mypy
-    async def fit(self, stream: TracesStream) -> 'StreamableDefense':
-        return await super(StreamableDefense, self).fit(stream)
+    def fit(self, stream: TracesStream) -> 'StreamableDefense':
+        return super(StreamableDefense, self).fit(stream)
 
     @abstractmethod
-    async def partial_fit(self, traces: pd.DataFrame) -> 'StreamableDefense':
+    def partial_fit(self, traces: pd.DataFrame) -> 'StreamableDefense':
         """
         Fits the defense to the given input traces but does not assume that the data is complete. This method
         should be used in a streaming setup, where calling `fit(traces)` can overwrite the previous parameters with
@@ -30,9 +30,9 @@ class StreamableDefense(Defense, metaclass=ABCMeta):
         """
         ...
 
-    async def _do_fit(self, traces_stream: TracesStream) -> 'StreamableDefense':
-        async for traces in traces_stream:
-            await self.partial_fit(traces)
+    def _do_fit(self, traces_stream: TracesStream) -> 'StreamableDefense':
+        for traces in traces_stream:
+            self.partial_fit(traces)
 
         return self
 
@@ -43,17 +43,17 @@ class StatelessDefense(StreamableDefense, metaclass=ABCMeta):
     """
 
     # noinspection PyTypeChecker,Mypy
-    async def fit(self, stream: TracesStream) -> 'StatelessDefense':
-        return await super(StatelessDefense, self).fit(stream)
+    def fit(self, stream: TracesStream) -> 'StatelessDefense':
+        return super(StatelessDefense, self).fit(stream)
 
-    async def _do_fit(self, traces_stream: TracesStream) -> 'StatelessDefense':
+    def _do_fit(self, traces_stream: TracesStream) -> 'StatelessDefense':
         return self
 
-    async def partial_fit(self, traces: pd.DataFrame) -> 'StatelessDefense':
+    def partial_fit(self, traces: pd.DataFrame) -> 'StatelessDefense':
         return self
 
-    async def fit_defend(self, traces_stream: TracesStream) -> AsyncGenerator[pd.DataFrame, None]:
-        async for defended in self.defend_all(traces_stream):
+    def fit_defend(self, traces_stream: TracesStream) -> Iterable[pd.DataFrame]:
+        for defended in self.defend_all(traces_stream):
             yield defended
 
     def reset(self):

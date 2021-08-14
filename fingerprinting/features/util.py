@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-from ..api.typing import TracesStream, LabelledExamples, Traces
+from ..api.typing import TracesStream, LabelledExamples, Traces, LabelledExampleStream
 
 
 def get_bursts(trace: pd.DataFrame) -> pd.DataFrame:
@@ -28,8 +28,8 @@ def round_to_increment(values: np.ndarray, inc: int) -> int:
     return np.where((rounded == 0) & (values != 0), 1, rounded)
 
 
-async def fill_missing(traces_stream: TracesStream, attributes: Set[str]) -> AsyncGenerator[LabelledExamples, None]:
-    async for traces in traces_stream:
+def fill_missing(traces_stream: TracesStream, attributes: Set[str]) -> LabelledExampleStream:
+    for traces in traces_stream:
         additional_att = [att for att in attributes if att not in traces]
 
         if len(additional_att) > 0:
@@ -62,7 +62,7 @@ def markers(bursts: pd.DataFrame, column: str, marker_id: str, attributes: Set[s
     if 0 in m:
         del m[0]
 
-    m = m.rename(lambda size: f"{marker_id}{size}", axis=1)
+    m = m.rename(lambda size: f"{marker_id}{int(size)}", axis=1)
     m.columns.name = None
 
     for c in m:
