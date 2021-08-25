@@ -15,11 +15,11 @@ OffsetOrRange = Union[OffsetOrDelta, str, range, List[Union[str, OffsetOrDelta]]
 
 
 class EvaluationParams:
-    def __init__(self, websites: int, runs: int, metric: Metric, train_offset: OffsetOrDelta,
+    def __init__(self, websites: int, runs: int, metric: Metric, train_offset: Optional[OffsetOrDelta],
                  train_test_delta: OffsetOrDelta, train_examples: int, test_examples: int,
                  defense: Optional[Dict[str, Dict[str, Any]]],
                  feature_set: Optional[Dict[str, Dict[str, Any]]],
-                 classifier: Optional[Dict[str, Dict[str, Any]]]):
+                 classifier: Optional[Dict[str, Dict[str, Any]]], dataset):
         self.__websites = websites
         self.__runs = runs
         self.__metric = metric
@@ -30,6 +30,8 @@ class EvaluationParams:
         self.__defense = defense
         self.__feature_set = feature_set
         self.__classifier = classifier
+
+        self.__dataset = dataset
 
     @property
     def websites(self) -> int:
@@ -45,6 +47,10 @@ class EvaluationParams:
 
     @property
     def train_offset(self) -> OffsetOrDelta:
+        if self.__train_offset is None:
+            max_offset = self.__dataset.traces_per_site - self.train_examples - self.test_examples
+            return random.randint(0, max_offset)
+
         return self.__train_offset
 
     @property
@@ -119,12 +125,9 @@ class EvaluationConfig:
                 for delta in self.__train_test_delta:
                     for tr_ex in self.__train_examples:
                         for te_ex in self.__test_examples:
-                            if tr_off is None:
-                                max_offset = dataset.traces_per_site - tr_ex - te_ex
-                                tr_off = random.randint(0, max_offset)
 
                             yield EvaluationParams(w, self.__runs, self.__metric, tr_off, delta, tr_ex, te_ex,
-                                                   self.__defense, self.__feature_set, self.__classifier)
+                                                   self.__defense, self.__feature_set, self.__classifier, dataset)
 
 
 def parse_int_or_range(value: IntOrRange, name: str, min_value: int = 0) -> Union[range, List[int]]:

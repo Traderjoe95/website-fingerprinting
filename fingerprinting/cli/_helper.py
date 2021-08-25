@@ -48,11 +48,11 @@ def gen_and_run_pipelines(_instances: List[ConfigObject], pipeline_gen, config_t
                     inst.get_str("out_file", out_file_default), inst.get_bool("out_append", False))
                    for inst in _instances]
 
+    first = True
     for pipeline, config, out_file, out_append in evaluations:
-        # pass
-        results = pipeline.run_evaluation(config)
-
-        if out_append:
-            results.to_csv(out_file, mode='a', header=False, index=False)
-        else:
-            results.to_csv(out_file, mode='w', header=True, index=False)
+        for result in pipeline.run_evaluation(config):
+            if out_append or not first:
+                result.to_csv(out_file, mode='a', header=False, index=False)
+            else:
+                first = False
+                result.to_csv(out_file, mode='w', header=True, index=False)

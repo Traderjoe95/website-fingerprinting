@@ -118,8 +118,13 @@ def __line_traces(results: pd.DataFrame,
                   agg: str,
                   confidence: Optional[float],
                   confidence_style: str,
-                  show_legend: bool = True) -> List[go.Scatter]:
+                  show_legend: bool = True,
+                  smoothing_window: Optional[int] = None) -> List[go.Scatter]:
     data = __preprocess_aggregated(results, x, y, series, agg)
+
+    if smoothing_window is not None:
+        data.iloc[2:-2, :] = data.rolling(smoothing_window, win_type='cosine',
+                                          center=True, min_periods=3).mean().iloc[2:-2, :]
 
     traces: List[go.Scatter] = []
     confidence_style = confidence_style.lower()
@@ -144,6 +149,12 @@ def __line_traces(results: pd.DataFrame,
                                           index=x).rename({'conf_int_lower': 'score'}, axis=1)
         confidence_upper = pd.pivot_table(confidence_df, columns=series, values='conf_int_upper',
                                           index=x).rename({'conf_int_upper': 'score'}, axis=1)
+
+        if smoothing_window is not None:
+            confidence_lower.iloc[2:-2, :] = confidence_lower.rolling(smoothing_window, win_type='cosine',
+                                                                      center=True, min_periods=3).mean().iloc[2:-2, :]
+            confidence_upper.iloc[2:-2, :] = confidence_upper.rolling(smoothing_window, win_type='cosine',
+                                                                      center=True, min_periods=3).mean().iloc[2:-2, :]
     else:
         confidence_lower = pd.DataFrame()
         confidence_upper = pd.DataFrame()
@@ -154,7 +165,7 @@ def __line_traces(results: pd.DataFrame,
                                 mode='lines',
                                 line=sc.Line(shape='spline', smoothing=0.4, color=COLORS[i % len(COLORS)]),
                                 marker=sc.Marker(symbol=MARKERS[i % len(MARKERS)]),
-                                name=c.capitalize(),
+                                name=c,
                                 legendgroup=c,
                                 showlegend=show_legend)
 
@@ -214,7 +225,7 @@ def __box_traces(results: pd.DataFrame,
                y=data[c],
                marker=bx.Marker(color=COLORS[i % len(COLORS)]),
                boxmean='sd' if show_sd else True,
-               name=c.capitalize(),
+               name=c,
                offsetgroup=c,
                legendgroup=c,
                showlegend=show_legend) for i, c in enumerate(__sort_none_first(list(data.columns)))
@@ -255,8 +266,10 @@ def line(results: pd.DataFrame,
          x_title: Optional[str] = None,
          x_range: Optional[Tuple[float, float]] = None,
          y_title: Optional[str] = None,
-         y_range: Optional[Tuple[float, float]] = None) -> go.Figure:
-    traces: List[go.Scatter] = __line_traces(results, x, y, series, agg, confidence, confidence_style)
+         y_range: Optional[Tuple[float, float]] = None,
+         smoothing_window: Optional[int] = None) -> go.Figure:
+    traces: List[go.Scatter] = __line_traces(results, x, y, series, agg, confidence, confidence_style,
+                                             smoothing_window=smoothing_window)
 
     return __create_figure(traces, title, series, x_title, x, x_range, y_title, y, y_range, hovermode='x unified')
 

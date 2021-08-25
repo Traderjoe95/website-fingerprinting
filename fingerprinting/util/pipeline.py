@@ -1,10 +1,11 @@
-from typing import AsyncIterable, AsyncGenerator, Tuple, Union, Awaitable, Generator
+from typing import Tuple, Generator, TypeVar, Iterator, AsyncIterable
 
+import curio
 import numpy as np
 import scipy.sparse as sp
-from asyncstdlib.itertools import aiter
+from asyncstdlib import anext
 
-from ..api.typing import LabelledExamples, TracesStream, TraceProcessor, Traces, ExampleStream, Examples, \
+from ..api.typing import LabelledExamples, TracesStream, TraceProcessor, ExampleStream, Examples, \
     LabelledExampleStream
 
 
@@ -58,7 +59,12 @@ def dense(arr) -> np.ndarray:
     return arr
 
 
-async def __await(traces: Union[Traces, Awaitable[Traces]]) -> Traces:
-    if isinstance(traces, Traces):
-        return traces
-    return await traces
+T = TypeVar("T")
+
+
+def synchronize(_aiter: AsyncIterable[T]) -> Iterator[T]:
+    try:
+        while True:
+            yield curio.run(anext, _aiter)
+    except StopAsyncIteration:
+        pass

@@ -8,7 +8,7 @@ from typing_extensions import Protocol, runtime_checkable
 
 @runtime_checkable
 class HasParams(Protocol):
-    def get_params(self):
+    def get_params(self, deep):
         ...
 
     def set_params(self, **params):

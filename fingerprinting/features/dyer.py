@@ -18,7 +18,7 @@ class Time(StatelessFeatureSet):
 
         return time.values, labels.values
 
-    def get_params(self):
+    def get_params(self, deep):
         return {}
 
 
@@ -40,7 +40,7 @@ class Bandwidth(StatelessFeatureSet):
 
         return np.abs(bw.values), labels.values
 
-    def get_params(self):
+    def get_params(self, deep):
         return {}
 
 
@@ -65,5 +65,5 @@ class VariableNGram(FeatureSet):
     def reset(self):
         self.__attributes = set()
 
-    def get_params(self):
+    def get_params(self, deep):
         return {}

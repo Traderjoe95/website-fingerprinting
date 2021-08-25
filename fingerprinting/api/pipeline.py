@@ -6,7 +6,8 @@ from itertools import tee
 from logging import getLogger
 from multiprocessing import Queue
 from multiprocessing.connection import Connection
-from typing import Tuple, Optional, Iterable, Union, Set, TypeVar, Generic, Dict, Any, List, Type
+from typing import Tuple, Optional, Iterable, Union, Set, TypeVar, Generic, Dict, Any, List, Type, AsyncIterable, \
+    Iterator
 
 import curio
 import numpy as np
@@ -19,7 +20,7 @@ from .typing import OffsetOrDelta, SiteSelection, LabelledExamples, Transformer,
     HasParams, Metric, Classifier, StreamableClassifier, ExampleStream, LabelledExampleStream, Traces
 from ..util.logging import configure_worker, get_queue
 from ..util.multiprocessing import WorkerAdapter, Manager, WorkerPool
-from ..util.pipeline import drop_labels, collect, collect_examples, concat_sparse_aware
+from ..util.pipeline import drop_labels, collect, collect_examples, concat_sparse_aware, synchronize
 from ..util.range import intersect as range_intersect
 
 T = TypeVar('T')
@@ -201,6 +202,10 @@ class Dataset(StaticNamed, metaclass=ABCMeta):
             return range(sites)
 
         return list(sites)
+
+    @property
+    def site_count(self) -> int:
+        return self.__sites
 
     @property
     def traces_per_site(self) -> int:
@@ -663,7 +668,8 @@ class EvaluationPipeline:
 
         return attack.fit_score(train, test, collect_before_predict=concat, metric=metric)
 
-    async def __run_evaluation(self, config: EvaluationConfig, site_ids: Optional[Set[int]]) -> pd.DataFrame:
+    async def __run_evaluation(self, config: EvaluationConfig,
+                               site_ids: Optional[Set[int]]) -> AsyncIterable[pd.DataFrame]:
         results: List[Dict[str, Any]] = []
 
         with WorkerPool() as pool:
@@ -677,9 +683,10 @@ class EvaluationPipeline:
                             sites = random.sample(site_ids or dataset.sites, k=params.websites)
                             classes = dataset.labels(sites).values
 
+                            train_offset = params.train_offset
                             train, test = dataset.load_train_test(train_examples_per_site=params.train_examples,
                                                                   test_examples_per_site=params.test_examples,
-                                                                  train_offset=params.train_offset,
+                                                                  train_offset=train_offset,
                                                                   train_test_delta=params.train_test_delta,
                                                                   sites=sites)
                             trains = tee(train, len(self.__defenses))
@@ -727,7 +734,7 @@ class EvaluationPipeline:
                                     "defense": def_name,
                                     "attack": att_name,
                                     "sites": int(s),
-                                    "train_offset": params.train_offset,
+                                    "train_offset": train_offset,
                                     "train_test_delta": params.train_test_delta,
                                     "train_examples": params.train_examples,
                                     "test_examples": params.test_examples,
@@ -735,18 +742,21 @@ class EvaluationPipeline:
                                 })
                                 _logger.info(f"Finished evaluation '{key}' with a score of {score}")
 
-        result_df = pd.DataFrame(results)
-        result_df['dataset'] = pd.Series(
-            pd.Categorical(result_df['dataset'], categories=np.unique(result_df['dataset']), ordered=False))
-        result_df['defense'] = pd.Series(
-            pd.Categorical(result_df['defense'], categories=np.unique(result_df['defense']), ordered=False))
-        result_df['attack'] = pd.Series(
-            pd.Categorical(result_df['attack'], categories=np.unique(result_df['attack']), ordered=False))
+                        result_df = pd.DataFrame(results)
+                        result_df['dataset'] = pd.Series(
+                            pd.Categorical(result_df['dataset'], categories=np.unique(result_df['dataset']), ordered=False))
+                        result_df['defense'] = pd.Series(
+                            pd.Categorical(result_df['defense'], categories=np.unique(result_df['defense']), ordered=False))
+                        result_df['attack'] = pd.Series(
+                            pd.Categorical(result_df['attack'], categories=np.unique(result_df['attack']), ordered=False))
 
-        return result_df
+                        results.clear()
 
-    def run_evaluation(self, config: EvaluationConfig, site_ids: Optional[Set[int]] = None) -> pd.DataFrame:
-        return curio.run(self.__run_evaluation, config, site_ids)
+                        yield result_df
+
+    def run_evaluation(self, config: EvaluationConfig, site_ids: Optional[Set[int]] = None) -> Iterator[pd.DataFrame]:
+        yield from synchronize(self.__run_evaluation(config, site_ids))
+        _logger.info("Evaluation Run finished.")
 
 
 def _evaluation_pipeline(attack: Union[Type[AttackDefinition], AttackDefinition], data: Dataset) -> EvaluationPipeline:

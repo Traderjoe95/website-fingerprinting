@@ -197,27 +197,39 @@ class ApplicationContext:
         return plugin.plugin_path() in self.__installed_plugins
 
     def lookup_dataset(self, name: str) -> List[Type[Dataset]]:
+        if name in self.__datasets:
+            return self.__datasets[name]
+
         result = self.__do_lookup_dataset(name)
 
         if isinstance(result, PluginError):
             raise RuntimeError(result.message)
         else:
+            self.__datasets[name] = result
             return result
 
     def lookup_defense(self, name: str) -> List[Type[Defense]]:
+        if name in self.__defenses:
+            return self.__defenses[name]
+
         result = self.__do_lookup_defense(name)
 
         if isinstance(result, PluginError):
             raise RuntimeError(result.message)
         else:
+            self.__defenses[name] = result
             return result
 
     def lookup_attack(self, name: str) -> List[Type[AttackDefinition]]:
+        if name in self.__attacks:
+            return self.__attacks[name]
+
         result = self.__do_lookup_attack(name)
 
         if isinstance(result, PluginError):
             raise RuntimeError(result.message)
         else:
+            self.__attacks[name] = result
             return result
 
     def __main_cli_group(self) -> Group:
@@ -456,8 +468,8 @@ def load_core_modules(ctx: ApplicationContext) -> None:
     for mod in [
         ".datasets.dummy", ".datasets.liberatore",
         ".defenses.deterministic", ".defenses.randomized",
-        ".attacks.dyer", ".attacks.herrmann", ".attacks.liberatore", ".attacks.panchenko",
-        ".cli.evaluation", ".cli.error_bound"
+        ".attacks.dyer", ".attacks.herrmann", ".attacks.liberatore", ".attacks.panchenko", ".attacks.cumul",
+        ".cli.evaluation", ".cli.error_bound", ".cli.outlier_detection"
     ]:
         install(mod, ctx)
 

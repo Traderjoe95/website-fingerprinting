@@ -54,7 +54,7 @@ class SimpleFeatureSet(FeatureSet, metaclass=ABCMeta):
     def reset(self):
         self.__attributes = set()
 
-    def get_params(self):
+    def get_params(self, deep):
         return {'keep_ack': self.__keep_ack}
 
     def set_params(self, **params):

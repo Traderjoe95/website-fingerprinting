@@ -1,17 +1,17 @@
 import random
 from datetime import timedelta
 from functools import partial
+from itertools import tee
 from logging import getLogger
 from multiprocessing import Queue
 from multiprocessing.connection import Connection
-from typing import Tuple, Optional, Dict, Any, Union, Set, List
+from typing import Tuple, Optional, Dict, Any, Union, Set, List, Type, Iterator, AsyncIterable
 
 import curio
 import numpy as np
 import numpy.random
 import pandas as pd
 import pendulum
-from asyncstdlib.itertools import tee
 from sklearn.model_selection import cross_val_score
 from sklearn.neighbors import KNeighborsClassifier
 
@@ -20,7 +20,7 @@ from ..api.pipeline import Datasets, Attacks, Defenses, EvaluationDataset, Evalu
 from ..api.typing import LabelledExampleStream, HasParams, OffsetOrDelta, Traces
 from ..util.logging import configure_worker, get_queue
 from ..util.multiprocessing import WorkerAdapter, Manager, WorkerPool
-from ..util.pipeline import collect, dense
+from ..util.pipeline import collect, dense, synchronize
 
 _RNG = np.random.default_rng()
 
@@ -84,7 +84,7 @@ class BayesErrorEstimator(HasParams):
 
         self.__closed_world = closed_world
 
-    def get_params(self):
+    def get_params(self, deep):
         return {'closed_world': self.closed_world}
 
     def set_params(self, **params):
@@ -99,8 +99,8 @@ class ErrorBoundsPipeline:
         if (isinstance(attacks, list) or isinstance(attacks, dict)) and len(attacks) == 0:
             raise ValueError("At least one attack is required for the evaluation pipeline")
 
-        self.__datasets: Dict[str, Dataset] = {}
-        if isinstance(datasets, Dataset) or isinstance(datasets, type) or isinstance(datasets, tuple):
+        self.__datasets: Dict[str, Type[Dataset]] = {}
+        if isinstance(datasets, type) or isinstance(datasets, tuple):
             self.add_dataset(datasets)
         elif isinstance(datasets, list):
             for ds in datasets:
@@ -110,8 +110,8 @@ class ErrorBoundsPipeline:
                 ds = datasets[name]
                 self.add_dataset((name, ds))
 
-        self.__attacks: Dict[str, AttackDefinition] = {}
-        if isinstance(attacks, AttackDefinition) or isinstance(attacks, type) or isinstance(attacks, tuple):
+        self.__attacks: Dict[str, Type[AttackDefinition]] = {}
+        if isinstance(attacks, type) or isinstance(attacks, tuple):
             self.add_attack(attacks)
         elif isinstance(attacks, list):
             for att in attacks:
@@ -121,8 +121,8 @@ class ErrorBoundsPipeline:
                 att = attacks[name]
                 self.add_attack((name, att))
 
-        self.__defenses: Dict[str, Optional[Defense]] = {}
-        if isinstance(defenses, Defense) or isinstance(defenses, type) or isinstance(defenses, tuple):
+        self.__defenses: Dict[str, Optional[Type[Defense]]] = {}
+        if isinstance(defenses, type) or isinstance(defenses, tuple):
             self.add_defense(defenses)
         elif isinstance(defenses, list):
             for defense in defenses:
@@ -138,49 +138,29 @@ class ErrorBoundsPipeline:
             self.__defenses["none"] = None
 
     def add_dataset(self, dataset: EvaluationDataset) -> 'ErrorBoundsPipeline':
-        if isinstance(dataset, Dataset):
+        if isinstance(dataset, type):
             self.__datasets[dataset.name()] = dataset
-        elif isinstance(dataset, type):
-            return self.add_dataset(dataset())
         else:
             name, dataset = dataset
-
-            if isinstance(dataset, Dataset):
-                self.__datasets[name] = dataset
-            else:
-                return self.add_dataset((name, dataset()))
+            self.__datasets[name] = dataset
 
         return self
 
     def add_attack(self, attack: EvaluationAttack) -> 'ErrorBoundsPipeline':
-        if isinstance(attack, AttackDefinition):
+        if isinstance(attack, type):
             self.__attacks[attack.name()] = attack
-        elif isinstance(attack, type):
-            return self.add_attack(attack())
         else:
             name, attack = attack
-
-            if isinstance(attack, AttackDefinition):
-                self.__attacks[name] = attack
-            else:
-                return self.add_attack((name, attack()))
+            self.__attacks[name] = attack
 
         return self
 
     def add_defense(self, defense: EvaluationDefense) -> 'ErrorBoundsPipeline':
-        if isinstance(defense, Defense):
+        if isinstance(defense, type):
             self.__defenses[defense.name()] = defense
-        elif isinstance(defense, type):
-            return self.add_defense(defense())
         elif defense is not None:
             name, defense = defense
-
-            if defense is not None and isinstance(defense, Defense):
-                self.__defenses[name] = defense
-            elif defense is not None:
-                return self.add_defense((name, defense()))
-            else:
-                self.__defenses[name] = None
+            self.__defenses[name] = defense
         else:
             self.__defenses["none"] = None
 
@@ -188,7 +168,7 @@ class ErrorBoundsPipeline:
 
     @staticmethod
     def _estimate_worker(closed_world: bool,
-                         attack_def: AttackDefinition,
+                         _attack_def: Type[AttackDefinition],
                          featureset_params: Optional[Dict[str, Any]],
                          dataset_conn: Connection,
                          queue: Queue = None,
@@ -198,6 +178,7 @@ class ErrorBoundsPipeline:
 
         data: WorkerAdapter[Traces] = WorkerAdapter(dataset_conn)
 
+        attack_def = _attack_def()
         feature_set = attack_def.create_feature_set()
 
         if featureset_params is not None:
@@ -207,24 +188,34 @@ class ErrorBoundsPipeline:
 
         return estimator.estimate(feature_set.extract_features_single(data))
 
-    async def __run_evaluation(self, config: 'ErrorBoundsConfig', site_ids: Optional[Set[int]]) -> pd.DataFrame:
+    async def __run_evaluation(self, config: 'ErrorBoundsConfig',
+                               site_ids: Optional[Set[int]]) -> AsyncIterable[pd.DataFrame]:
         results: List[Dict[str, Any]] = []
 
         with WorkerPool() as pool:
             async with curio.TaskGroup() as g:
-                for dataset_name, dataset in self.__datasets.items():
+                for dataset_name, _dataset in self.__datasets.items():
+                    dataset = _dataset()
                     for run in range(config.runs):
                         sites = random.sample(site_ids or dataset.sites, k=config.websites)
 
-                        data = dataset.load(offset=config.offset, examples_per_site=config.examples, sites=sites)
-                        datas = tee(data, n=len(self.__defenses))
+                        if config.offset is None:
+                            max_offset = dataset.traces_per_site - config.examples
+                            offset = random.randint(0, max_offset)
+                        else:
+                            offset = config.offset
+
+                        data = dataset.load(offset=offset, examples_per_site=config.examples, sites=sites)
+                        datas = tee(data, len(self.__defenses))
 
                         tasks: Dict[str, curio.Task] = {}
 
-                        for defense_idx, (defense_name, defense) in enumerate(self.__defenses.items()):
-                            data = datas[defense_idx]
+                        for defense_idx, (defense_name, _defense) in enumerate(self.__defenses.items()):
+                            data = (t.copy(deep=True) for t in datas[defense_idx])
 
-                            if defense is not None:
+                            if _defense is not None:
+                                defense = _defense()
+
                                 defense_params = config.defense_params(defense_name)
                                 if defense_params is not None:
                                     defense.set_params(**defense_params)
@@ -253,24 +244,32 @@ class ErrorBoundsPipeline:
                                 "defense": def_name,
                                 "feature_set": att_name,
                                 "error_bound": error_bound,
-                                "epsilon": epsilon
+                                "epsilon": epsilon,
+                                "closed_world": config.closed_world
                             })
 
                             _logger.info(f"Finished error bound estimation '{key}' with a result of {error_bound} "
                                          f"(epsilon = {epsilon})")
 
-        result_df = pd.DataFrame(results)
-        result_df['dataset'] = pd.Series(
-            pd.Categorical(result_df['dataset'], categories=np.unique(result_df['dataset']), ordered=False))
-        result_df['defense'] = pd.Series(
-            pd.Categorical(result_df['defense'], categories=np.unique(result_df['defense']), ordered=False))
-        result_df['feature_set'] = pd.Series(
-            pd.Categorical(result_df['feature_set'], categories=np.unique(result_df['feature_set']), ordered=False))
+                        result_df = pd.DataFrame(results)
+                        result_df['dataset'] = pd.Series(
+                            pd.Categorical(result_df['dataset'], categories=np.unique(result_df['dataset']),
+                                           ordered=False))
+                        result_df['defense'] = pd.Series(
+                            pd.Categorical(result_df['defense'], categories=np.unique(result_df['defense']),
+                                           ordered=False))
+                        result_df['feature_set'] = pd.Series(
+                            pd.Categorical(result_df['feature_set'], categories=np.unique(result_df['feature_set']),
+                                           ordered=False))
 
-        return result_df
+                        results.clear()
 
-    def run_evaluation(self, config: 'ErrorBoundsConfig', site_ids: Optional[Set[int]] = None) -> pd.DataFrame:
-        return curio.run(self.__run_evaluation, config, site_ids)
+                        yield result_df
+
+    def run_evaluation(self, config: 'ErrorBoundsConfig',
+                       site_ids: Optional[Set[int]] = None) -> Iterator[pd.DataFrame]:
+        yield from synchronize(self.__run_evaluation(config, site_ids))
+        _logger.info("Error Bound evaluation finished")
 
 
 OffsetOrDuration = Union[OffsetOrDelta, str]
@@ -286,9 +285,15 @@ class ErrorBoundsConfig:
                  defense: Optional[Dict[str, Dict[str, Any]]] = None,
                  feature_set: Optional[Dict[str, Dict[str, Any]]] = None):
         self.__websites = websites
+
         self.__examples = examples
         self.__runs = runs
-        self.__offset = parse_offset_or_duration(offset, "offset")
+
+        if offset == 'randomize':
+            self.__offset = None
+        else:
+            self.__offset = parse_offset_or_duration(offset, "offset")
+
         self.__closed_world = closed_world
 
         self.__defense = defense

@@ -36,9 +36,9 @@ class MarkerConfig:
 
         if any(it < 1 for it in [burst_size_inc, html_size_inc, download_pct_inc, packet_size_count_inc, bandwidth_inc,
                                  total_count_inc]):
-            raise ValueError("All increments must be positive")
+            raise ValueError('All increments must be positive')
         if len(burst_length_steps) <= 1 or any(step <= 0 for step in burst_length_steps):
-            raise ValueError("There must only be positive and at least two burst length steps")
+            raise ValueError('There must only be positive and at least two burst length steps')
 
         self.__burst_size = burst_size
         self.__burst_size_inc = burst_size_inc
@@ -130,70 +130,70 @@ class MarkerConfig:
 class Markers(FeatureSet):
     def __init__(self, **params):
         self.__config = MarkerConfig(**params)
-        self.__attributes: Set[str] = {"UNQ+", "UNQ-", "PCT+", "PCT-", "N+", "N-"}
+        self.__attributes: Set[str] = {'P_UNQ+', 'P_UNQ-', 'P_PCT-', 'P_PCT-', 'P_N+', 'P_N-'}
 
     def _do_extract(self, train_traces: TracesStream, test_traces: TracesStream) -> TrainTestSplit:
         train, test = process_fenced(self.__extract_markers, train_traces, test_traces)
         return fill_missing(train, self.__attributes), fill_missing(test, self.__attributes)
 
     def __extract_markers(self, traces: Traces) -> Traces:
-        bursts = traces.groupby(["site_id", "trace_id"]).apply(get_bursts)
+        bursts = traces.groupby(['site_id', 'trace_id']).apply(get_bursts)
 
-        direction = np.clip(bursts["burst_size"], -1, 1)
+        direction = np.clip(bursts['burst_size'], -1, 1)
 
         if self.__config.burst_size_enabled:
-            bursts["burst_size_rd"] = direction * self.__config.round_burst_size(np.abs(bursts["burst_size"]))
-            size_markers = markers(bursts, "burst_size_rd", "S", self.__attributes)
+            bursts['burst_size_rd'] = direction * self.__config.round_burst_size(np.abs(bursts['burst_size']))
+            size_markers = markers(bursts, 'burst_size_rd', 'P_S', self.__attributes)
         else:
             size_markers = empty_markers(traces)
 
         if self.__config.burst_length_enabled:
-            bursts["burst_length"] = direction * self.__config.round_burst_lengths(bursts["burst_length"])
-            number_markers = markers(bursts, "burst_length", "N", self.__attributes)
+            bursts['burst_length'] = direction * self.__config.round_burst_lengths(bursts['burst_length'])
+            number_markers = markers(bursts, 'burst_length', 'P_N', self.__attributes)
         else:
             number_markers = empty_markers(traces)
 
         if self.__config.html_size_enabled:
-            html = bursts.loc[idx[:, :, 2], ["burst_size"]].rename({"burst_size": "html_size"}, axis=1)
-            html["html_size"] = self.__config.round_html_size(html["html_size"])
-            html_markers = markers(html, "html_size", "H", self.__attributes)
+            html = bursts.loc[idx[:, :, 2], ['burst_size']].rename({'burst_size': 'html_size'}, axis=1)
+            html['html_size'] = self.__config.round_html_size(html['html_size'])
+            html_markers = markers(html, 'html_size', 'P_H', self.__attributes)
         else:
             html_markers = empty_markers(traces)
 
-        traces["sign"] = np.clip(traces["size"], -1, 1)
+        traces['sign'] = np.clip(traces['size'], -1, 1)
         traces_agg = pd.pivot_table(traces,
-                                    columns="sign",
-                                    index=["site_id", "trace_id"],
-                                    values="size",
-                                    aggfunc=["nunique", "sum", "count"],
+                                    columns='sign',
+                                    index=['site_id', 'trace_id'],
+                                    values='size',
+                                    aggfunc=['nunique', 'sum', 'count'],
                                     fill_value=0)
         traces_agg.columns = ['/'.join(str(c) for c in col).strip() for col in traces_agg.columns.values]
         traces_agg = traces_agg.rename(
             {
-                "nunique/-1": "unique_up",
-                "sum/-1": "bw_up",
-                "count/-1": "count_up",
-                "nunique/1": "unique_dw",
-                "sum/1": "bw_dw",
-                "count/1": "count_dw"
+                'nunique/-1': 'unique_up',
+                'sum/-1': 'bw_up',
+                'count/-1': 'count_up',
+                'nunique/1': 'unique_dw',
+                'sum/1': 'bw_dw',
+                'count/1': 'count_dw'
             },
             axis=1)
 
-        if "sum/0" in traces_agg:
-            del traces_agg["sum/0"]
-            del traces_agg["nunique/0"]
-            del traces_agg["count/0"]
+        if 'sum/0' in traces_agg:
+            del traces_agg['sum/0']
+            del traces_agg['nunique/0']
+            del traces_agg['count/0']
 
-        for col in {"unique_up", "bw_up", "count_up", "unique_dw", "bw_dw", "count_dw"}:
+        for col in {'unique_up', 'bw_up', 'count_up', 'unique_dw', 'bw_dw', 'count_dw'}:
             if col not in traces_agg:
                 traces_agg[col] = 0
 
         if self.__config.bandwidth_enabled:
-            traces_agg["bw_up"] = -1 * self.__config.round_bandwidth(-1 * traces_agg["bw_up"])
-            traces_agg["bw_dw"] = self.__config.round_bandwidth(traces_agg["bw_dw"])
+            traces_agg['bw_up'] = -1 * self.__config.round_bandwidth(-1 * traces_agg['bw_up'])
+            traces_agg['bw_dw'] = self.__config.round_bandwidth(traces_agg['bw_dw'])
 
-            bw_up_markers = markers(traces_agg, "bw_up", "B", self.__attributes)
-            bw_dw_markers = markers(traces_agg, "bw_dw", "B", self.__attributes)
+            bw_up_markers = markers(traces_agg, 'bw_up', 'P_B', self.__attributes)
+            bw_dw_markers = markers(traces_agg, 'bw_dw', 'P_B', self.__attributes)
         else:
             bw_up_markers = empty_markers(traces)
             bw_dw_markers = empty_markers(traces)
@@ -201,35 +201,35 @@ class Markers(FeatureSet):
         additional = empty_markers(traces)
 
         if self.__config.packet_size_count_enabled:
-            additional['UNQ+'] = self.__config.round_packet_size_count(traces_agg["unique_dw"])
-            additional['UNQ-'] = self.__config.round_packet_size_count(traces_agg["unique_up"])
+            additional['P_UNQ+'] = self.__config.round_packet_size_count(traces_agg['unique_dw'])
+            additional['P_UNQ-'] = self.__config.round_packet_size_count(traces_agg['unique_up'])
         if self.__config.total_count_enabled:
-            additional['N+'] = self.__config.round_packet_count(traces_agg["count_dw"])
-            additional['N-'] = self.__config.round_packet_count(traces_agg["count_up"])
+            additional['P_N+'] = self.__config.round_packet_count(traces_agg['count_dw'])
+            additional['P_N-'] = self.__config.round_packet_count(traces_agg['count_up'])
         if self.__config.download_pct_enabled:
-            total = traces_agg["count_up"] + traces_agg["count_dw"]
+            total = traces_agg['count_up'] + traces_agg['count_dw']
             non_zero = total > 0
 
             non_zero_total = total[non_zero]
 
             pct_up = np.zeros(traces_agg.shape[0])
-            pct_up[non_zero.values] = ((100. * traces_agg.loc[non_zero, "count_up"]) / non_zero_total).values
+            pct_up[non_zero.values] = ((100. * traces_agg.loc[non_zero, 'count_up']) / non_zero_total).values
 
             pct_dw = np.zeros(traces_agg.shape[0])
-            pct_dw[non_zero.values] = (100. * traces_agg.loc[non_zero, "count_dw"] / non_zero_total).values
+            pct_dw[non_zero.values] = (100. * traces_agg.loc[non_zero, 'count_dw'] / non_zero_total).values
 
-            additional['PCT+'] = self.__config.round_pct(pct_dw)
-            additional['PCT-'] = self.__config.round_pct(pct_up)
+            additional['P_PCT+'] = self.__config.round_pct(pct_dw)
+            additional['P_PCT-'] = self.__config.round_pct(pct_up)
 
-        result = size_markers.join(number_markers, how="outer").join(html_markers, how="outer").join(
-            bw_up_markers, how="outer").join(bw_dw_markers, how="outer").join(additional, how="outer").fillna(0)
+        result = size_markers.join(number_markers, how='outer').join(html_markers, how='outer').join(
+            bw_up_markers, how='outer').join(bw_dw_markers, how='outer').join(additional, how='outer').fillna(0)
 
         nans = np.argwhere(np.isnan(result.values))
         if nans.size > 0:
-            print("Detected NaN for")
+            print('Detected NaN for')
 
             for index in nans:
-                print("Site ID/Trace ID:", result.index[index[0]], "Column:", result.columns[index[1]])
+                print('Site ID/Trace ID:', result.index[index[0]], 'Column:', result.columns[index[1]])
             print()
 
         return result
@@ -238,15 +238,15 @@ class Markers(FeatureSet):
         self.__attributes = set()
 
         if self.__config.packet_size_count_enabled:
-            self.__attributes.update({"UNQ+", "UNQ-"})
+            self.__attributes.update({'P_UNQ+', 'P_UNQ-'})
 
         if self.__config.download_pct_enabled:
-            self.__attributes.update({"PCT+", "PCT-"})
+            self.__attributes.update({'P_PCT+', 'P_PCT-'})
 
         if self.__config.total_count_enabled:
-            self.__attributes.update({"N+", "N-"})
+            self.__attributes.update({'P_N+', 'P_N-'})
 
-    def get_params(self):
+    def get_params(self, deep):
         return self.__config.dict
 
     def set_params(self, **params):
