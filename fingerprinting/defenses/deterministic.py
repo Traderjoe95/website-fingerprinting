@@ -2,7 +2,6 @@ from abc import ABCMeta
 from typing import List, Type
 
 import numpy as np
-import pandas as pd
 
 from ..api import StatelessDefense, Defense
 from ..api.typing import Traces
@@ -58,7 +57,7 @@ class LinearPadding(DigitizingPadding):
         self.__increment = increment
         self._steps = np.append(np.arange(0, 1500, increment), 1500)
 
-    def get_params(self):
+    def get_params(self, deep):
         return {'increment': self.increment}
 
     def set_params(self, **params):
@@ -75,7 +74,7 @@ class ExponentialPadding(DigitizingPadding):
     def name() -> str:
         return "exponential-padding"
 
-    def get_params(self):
+    def get_params(self, deep):
         return {}
 
     def set_params(self, **params):
@@ -90,7 +89,7 @@ class MiceElephantsPadding(DigitizingPadding):
     def name() -> str:
         return "mice-elephants"
 
-    def get_params(self):
+    def get_params(self, deep):
         return {}
 
     def set_params(self, **params):
@@ -105,7 +104,7 @@ class PadToMTU(DigitizingPadding):
     def name() -> str:
         return "pad-to-mtu"
 
-    def get_params(self):
+    def get_params(self, deep):
         return {}
 
     def set_params(self, **params):

@@ -15,7 +15,8 @@ def plugin_path() -> str:
 
 
 def defenses() -> List[Type[Defense]]:
-    return [SessionRandom255, PacketRandom255, PacketRandomGaussian, SessionRandomGaussian, PacketRandomMTU]
+    return [SessionRandom255, PacketRandom255, PacketRandomGaussian, SessionRandomGaussian, PacketRandomMTU,
+            SessionRandomUniform, PacketRandomUniform]
 
 
 _RNG = rd.default_rng()
@@ -75,7 +76,7 @@ class SessionRandom255(SessionRandomPadding):
     def name() -> str:
         return "session-random-255"
 
-    def get_params(self):
+    def get_params(self, deep):
         return {}
 
     def set_params(self, **params):
@@ -93,7 +94,43 @@ class PacketRandom255(PacketRandomPadding):
     def name() -> str:
         return "packet-random-255"
 
-    def get_params(self):
+    def get_params(self, deep):
+        return {}
+
+    def set_params(self, **params):
+        pass
+
+
+class SessionRandomUniform(SessionRandomPadding):
+    def __init__(self):
+        self.__range = np.arange(0, 257, 8)
+
+    def _sample_for_sessions(self, session_max_sizes: np.ndarray) -> np.ndarray:
+        return _RNG.choice(self.__range, session_max_sizes.shape)
+
+    @staticmethod
+    def name() -> str:
+        return "session-random-uniform"
+
+    def get_params(self, deep):
+        return {}
+
+    def set_params(self, **params):
+        pass
+
+
+class PacketRandomUniform(PacketRandomPadding):
+    def __init__(self):
+        self.__range = np.arange(0, 257, 8)
+
+    def _sample_for_packets(self, sizes: np.ndarray) -> np.ndarray:
+        return _RNG.choice(self.__range, sizes.shape)
+
+    @staticmethod
+    def name() -> str:
+        return "packet-random-uniform"
+
+    def get_params(self, deep):
         return {}
 
     def set_params(self, **params):
@@ -116,7 +153,7 @@ class PacketRandomGaussian(PacketRandomPadding):
     def expected_padding(self, expected_padding: int):
         self.__expected_padding = expected_padding
 
-    def get_params(self):
+    def get_params(self, deep):
         return {'expected_padding': self.expected_padding}
 
     def set_params(self, **params):
@@ -124,7 +161,7 @@ class PacketRandomGaussian(PacketRandomPadding):
             self.expected_padding = int(params['expected_padding'])
 
     def _sample_for_packets(self, sizes: np.ndarray) -> np.ndarray:
-        loc = _loc(sizes, self.__expected_padding, upper_bound=1500)
+        loc = _loc(sizes, self.__expected_padding)
         scale = _scale(loc)
 
         return _truncated_rounded_normal(sizes, loc, scale, upper_bound=1500)
@@ -146,7 +183,7 @@ class SessionRandomGaussian(SessionRandomPadding):
     def expected_padding(self, expected_padding: int):
         self.__expected_padding = expected_padding
 
-    def get_params(self):
+    def get_params(self, deep):
         return {'expected_padding': self.expected_padding}
 
     def set_params(self, **params):
@@ -178,7 +215,7 @@ class PacketRandomMTU(PacketRandomPadding):
     def name() -> str:
         return "packet-random-mtu"
 
-    def get_params(self):
+    def get_params(self, deep):
         return {}
 
     def set_params(self, **params):
@@ -190,7 +227,7 @@ def _truncated_rounded_normal(sizes: np.ndarray, loc: np.ndarray, scale: np.ndar
     padding = _rounded_normal(sizes.shape, loc, scale)
 
     def cond(s: np.ndarray, p: np.ndarray):
-        c = (p < 0)
+        c = (p < 0) | (p > 1500)
 
         if upper_bound is not None:
             c |= (s + p) > upper_bound

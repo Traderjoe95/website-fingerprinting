@@ -123,8 +123,8 @@ def __line_traces(results: pd.DataFrame,
     data = __preprocess_aggregated(results, x, y, series, agg)
 
     if smoothing_window is not None:
-        data.iloc[2:-2, :] = data.rolling(smoothing_window, win_type='cosine',
-                                          center=True, min_periods=3).mean().iloc[2:-2, :]
+        data.iloc[2:-2, :] = data.rolling(smoothing_window, win_type='gaussian',
+                                          center=True, min_periods=3).mean(std=smoothing_window / 6.).iloc[2:-2, :]
 
     traces: List[go.Scatter] = []
     confidence_style = confidence_style.lower()
@@ -151,10 +151,14 @@ def __line_traces(results: pd.DataFrame,
                                           index=x).rename({'conf_int_upper': 'score'}, axis=1)
 
         if smoothing_window is not None:
-            confidence_lower.iloc[2:-2, :] = confidence_lower.rolling(smoothing_window, win_type='cosine',
-                                                                      center=True, min_periods=3).mean().iloc[2:-2, :]
+            confidence_lower.iloc[2:-2, :] = confidence_lower.rolling(smoothing_window, win_type='gaussian',
+                                                                      center=True, min_periods=3).mean(
+                std=smoothing_window / 6.
+            ).iloc[2:-2, :]
             confidence_upper.iloc[2:-2, :] = confidence_upper.rolling(smoothing_window, win_type='cosine',
-                                                                      center=True, min_periods=3).mean().iloc[2:-2, :]
+                                                                      center=True, min_periods=3).mean(
+                std=smoothing_window / 6.
+            ).iloc[2:-2, :]
     else:
         confidence_lower = pd.DataFrame()
         confidence_upper = pd.DataFrame()

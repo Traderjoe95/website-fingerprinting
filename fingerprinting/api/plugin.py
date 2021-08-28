@@ -469,7 +469,7 @@ def load_core_modules(ctx: ApplicationContext) -> None:
         ".datasets.dummy", ".datasets.liberatore",
         ".defenses.deterministic", ".defenses.randomized",
         ".attacks.dyer", ".attacks.herrmann", ".attacks.liberatore", ".attacks.panchenko", ".attacks.cumul",
-        ".cli.evaluation", ".cli.error_bound", ".cli.outlier_detection"
+        ".cli.evaluation", ".cli.error_bound", ".cli.outlier_detection", ".cli.overhead"
     ]:
         install(mod, ctx)
 
