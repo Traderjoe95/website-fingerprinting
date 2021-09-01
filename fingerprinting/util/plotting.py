@@ -221,7 +221,8 @@ def __box_traces(results: pd.DataFrame,
                  y: str,
                  series: Optional[str],
                  show_sd: bool,
-                 show_legend: bool = True) -> List[go.Box]:
+                 show_legend: bool = True,
+                 trace_order: Optional[List[str]] = None) -> List[go.Box]:
     data = __preprocess_distribution(results, x, y, series)
 
     return [
@@ -232,7 +233,7 @@ def __box_traces(results: pd.DataFrame,
                name=c,
                offsetgroup=c,
                legendgroup=c,
-               showlegend=show_legend) for i, c in enumerate(__sort_none_first(list(data.columns)))
+               showlegend=show_legend) for i, c in enumerate(trace_order or __sort_none_first(list(data.columns)))
     ]
 
 
@@ -288,8 +289,9 @@ def box(results: pd.DataFrame,
         x_title: Optional[str] = None,
         x_range: Optional[Tuple[float, float]] = None,
         y_title: Optional[str] = None,
-        y_range: Optional[Tuple[float, float]] = None) -> go.Figure:
-    traces = __box_traces(results, x, y, series, show_sd)
+        y_range: Optional[Tuple[float, float]] = None,
+        trace_order: Optional[List[str]] = None) -> go.Figure:
+    traces = __box_traces(results, x, y, series, show_sd, trace_order=trace_order)
     return __create_figure(traces, title, series, x_title, x, x_range, y_title, y, y_range, boxmode='group')
 
 
